@@ -26,7 +26,7 @@ def init_db():
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER, player_name TEXT, ip TEXT, er INTEGER,
                       so INTEGER DEFAULT 0, np INTEGER DEFAULT 0, tbf INTEGER DEFAULT 0, h INTEGER DEFAULT 0, 
                       hr INTEGER DEFAULT 0, bb INTEGER DEFAULT 0, hbp INTEGER DEFAULT 0, r INTEGER DEFAULT 0, 
-                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0)''')
+                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0, date TEXT)''')
         conn.commit()
     init_scheduler_db()
     init_auth_db()
@@ -79,6 +79,8 @@ def save_scorebook_data(game_info, score_data, pitching_data, game_id=None):
             max_id = c.fetchone()[0]
             game_id = (max_id + 1) if max_id is not None else 1
         
+        game_date = game_info.get('date', '')
+
         for player in score_data:
             dp_count = sum(1 for inn in player['innings'] if "併" in inn.get('res', ''))
             c.execute("""INSERT INTO scorebook_batting (game_id, player_name, innings, summary, dp) 
@@ -86,9 +88,9 @@ def save_scorebook_data(game_info, score_data, pitching_data, game_id=None):
                       (game_id, player['name'], json.dumps(player['innings']), json.dumps({**player['summary'], **game_info}), dp_count))
         
         for p in pitching_data:
-            c.execute("""INSERT INTO scorebook_pitching (game_id, player_name, ip, er, so, np, tbf, h, hr, bb, hbp, r, win, loss, save) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (game_id, p['name'], p['ip'], p['er'], p['so'], p['np'], p['tbf'], p['h'], p['hr'], p['bb'], p['hbp'], p['r'], p['win'], p['loss'], p['save']))
+            c.execute("""INSERT INTO scorebook_pitching (game_id, player_name, ip, er, so, np, tbf, h, hr, bb, hbp, r, win, loss, save, date) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (game_id, p['name'], p['ip'], p['er'], p['so'], p['np'], p['tbf'], p['h'], p['hr'], p['bb'], p['hbp'], p['r'], p['win'], p['loss'], p['save'], game_date))
         conn.commit()
         return game_id
 
@@ -141,10 +143,6 @@ def init_scheduler_db():
         conn.commit()
 
 def save_event(date, title, category, location, memo, event_id=None):
-    """
-    保存または更新を行います。
-    event_id が指定されている場合は UPDATE、指定がない場合は INSERT します。
-    """
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         if event_id is not None:
@@ -162,7 +160,6 @@ def get_all_events():
         return c.fetchall()
 
 def delete_event(event_id):
-    """指定されたイベントと、それに関連する出席データを削除する"""
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("DELETE FROM attendance WHERE event_id = ?", (event_id,))
@@ -253,15 +250,19 @@ def get_player_season_stats(p_id, year=None):
         row = c.fetchone()
         if not row: return {"avg": 0.0, "hr": 0, "sb": 0, "era": 0.0}
         player_name = row[0]
+        
+        # 打撃成績の年度フィルタリング
         query = "SELECT innings, summary FROM scorebook_batting WHERE player_name = ?"
-        params = [player_name]
-        if year:
-            query += " AND summary LIKE ?"
-            params.append(f'%"{year}/%')
-        c.execute(query, params)
+        c.execute(query, (player_name,))
         rows = c.fetchall()
         s = {"ab": 0, "h": 0, "hr": 0, "sb": 0}
         for row_inn, row_sum in rows:
+            if row_sum:
+                sums = json.loads(row_sum)
+                # 年度指定がある場合、dateから年を判定
+                if year and str(year) not in str(sums.get('date', '')):
+                    continue
+                s["sb"] += int(sums.get("sb", 0))
             if row_inn:
                 inns = json.loads(row_inn)
                 for i in inns:
@@ -270,25 +271,37 @@ def get_player_season_stats(p_id, year=None):
                     s["ab"] += 1
                     if any(h in res for h in ["安", "2", "3", "本"]): s["h"] += 1
                     if "本" in res: s["hr"] += 1
-            if row_sum:
-                sums = json.loads(row_sum)
-                s["sb"] += int(sums.get("sb", 0))
-        p_query = "SELECT SUM(CAST(ip AS REAL)), SUM(er) FROM scorebook_pitching WHERE player_name = ?"
+        
+        # 投手成績の年度フィルタリング
+        p_query = "SELECT ip, er FROM scorebook_pitching WHERE player_name = ?"
         p_params = [player_name]
+        if year:
+            p_query += " AND date LIKE ?"
+            p_params.append(f"{year}%")
+            
         c.execute(p_query, p_params)
-        p_row = c.fetchone()
-        total_ip = p_row[0] if p_row[0] else 0.0
-        total_er = p_row[1] if p_row[1] else 0
+        p_rows = c.fetchall()
+        total_ip, total_er = 0.0, 0
+        for ip_val, er_val in p_rows:
+            total_ip += float(ip_val) if ip_val else 0.0
+            total_er += er_val if er_val else 0
+            
         era = (total_er * 7 / total_ip) if total_ip > 0 else 0.0
         return {"avg": s["h"]/s["ab"] if s["ab"] > 0 else 0.0, "hr": s["hr"], "sb": s["sb"], "era": era}
 
-def get_player_detailed_stats(player_name):
+def get_player_detailed_stats(player_name, year=None):
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("SELECT innings, summary FROM scorebook_batting WHERE player_name = ?", (player_name,))
         rows = c.fetchall()
         s = {"pa": 0, "ab": 0, "h": 0, "d1": 0, "d2": 0, "d3": 0, "hr": 0, "bb": 0, "sf": 0, "so": 0, "rbi": 0, "sb": 0, "dp": 0}
         for row_inn, row_sum in rows:
+            if row_sum:
+                sums = json.loads(row_sum)
+                if year and str(year) not in str(sums.get('date', '')):
+                    continue
+                s["rbi"] += int(sums.get("rbi", 0))
+                s["sb"] += int(sums.get("sb", 0))
             if row_inn:
                 inns = json.loads(row_inn)
                 for i in inns:
@@ -307,10 +320,6 @@ def get_player_detailed_stats(player_name):
                         elif "本" in res: s["h"] += 1; s["hr"] += 1
                         if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
                         if "併" in res: s["dp"] += 1
-            if row_sum:
-                sums = json.loads(row_sum)
-                s["rbi"] += int(sums.get("rbi", 0))
-                s["sb"] += int(sums.get("sb", 0))
         avg = s["h"] / s["ab"] if s["ab"] > 0 else 0.0
         obp_denom = (s["ab"] + s["bb"] + s["sf"])
         obp = (s["h"] + s["bb"]) / obp_denom if obp_denom > 0 else 0.0
@@ -333,18 +342,20 @@ def get_game_history():
             history.append(game_info)
         return history
 
-def get_batting_stats_filtered(team_name="すべて"):
+def get_batting_stats_filtered(team_name="すべて", year=None):
     players = get_players_by_team(team_name) if team_name != "すべて" else get_all_players()
     stats_list = []
     for p in players:
         p_name = p[1]
-        res = get_player_detailed_stats(p_name)
+        res = get_player_detailed_stats(p_name, year=year)
         res['name'] = p_name
         res['team'] = p[8] if len(p) > 8 else "未所属"
-        stats_list.append(res)
+        # データがある選手のみ追加
+        if res['pa'] > 0:
+            stats_list.append(res)
     return stats_list
 
-def get_pitching_stats_filtered(team_name="すべて"):
+def get_pitching_stats_filtered(team_name="すべて", year=None):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -356,9 +367,17 @@ def get_pitching_stats_filtered(team_name="すべて"):
             LEFT JOIN players pl ON p.player_name = pl.name
         """
         params = []
+        conditions = []
         if team_name != "すべて":
-            query += " WHERE pl.team_name = ?"
+            conditions.append("pl.team_name = ?")
             params.append(team_name)
+        if year:
+            conditions.append("p.date LIKE ?")
+            params.append(f"{year}%")
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+            
         query += " GROUP BY p.player_name"
         c.execute(query, params)
         rows = c.fetchall()
@@ -393,7 +412,6 @@ def update_game_score(game_id, date, opponent, name, my_team, total_my, total_op
         conn.commit()
 
 def delete_player(p_id):
-    """選手を削除する"""
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("DELETE FROM players WHERE id = ?", (p_id,))
