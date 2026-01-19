@@ -10,23 +10,22 @@ DB_NAME = 'softball.db'
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
-        # 選手テーブル
         c.execute('''CREATE TABLE IF NOT EXISTS players
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, birthday TEXT, hometown TEXT, 
                       memo TEXT, image_path TEXT, video_url TEXT, is_active INTEGER DEFAULT 1, team_name TEXT DEFAULT '未所属')''')
-        # チームテーブル
         c.execute('''CREATE TABLE IF NOT EXISTS teams
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, color TEXT DEFAULT '#e1e4e8')''')
-        # 打撃成績テーブル
         c.execute('''CREATE TABLE IF NOT EXISTS scorebook_batting
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER, player_name TEXT, innings TEXT, summary TEXT, dp INTEGER DEFAULT 0)''')
-        
-        # 投手成績テーブル
         c.execute('''CREATE TABLE IF NOT EXISTS scorebook_pitching
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER, player_name TEXT, ip TEXT, er INTEGER,
                       so INTEGER DEFAULT 0, np INTEGER DEFAULT 0, tbf INTEGER DEFAULT 0, h INTEGER DEFAULT 0, 
                       hr INTEGER DEFAULT 0, bb INTEGER DEFAULT 0, hbp INTEGER DEFAULT 0, r INTEGER DEFAULT 0, 
-                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0, date TEXT)''')
+                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0)''')
+        try:
+            c.execute("ALTER TABLE scorebook_pitching ADD COLUMN date TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     init_scheduler_db()
     init_auth_db()
@@ -80,7 +79,7 @@ def save_scorebook_data(game_info, score_data, pitching_data, game_id=None):
             game_id = (max_id + 1) if max_id is not None else 1
         
         game_date = game_info.get('date', '')
-
+        
         for player in score_data:
             dp_count = sum(1 for inn in player['innings'] if "併" in inn.get('res', ''))
             c.execute("""INSERT INTO scorebook_batting (game_id, player_name, innings, summary, dp) 
@@ -188,23 +187,12 @@ def cleanup_old_events(year):
 def init_auth_db():
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT,
-            role TEXT
-        )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            username TEXT,
-            action TEXT,
-            details TEXT
-        )""")
+        c.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT, role TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, username TEXT, action TEXT, details TEXT)")
         c.execute("SELECT * FROM users WHERE username = 'admin'")
         if not c.fetchone():
             p_hash = hashlib.sha256("admin123".encode()).hexdigest()
-            c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", 
-                      ('admin', p_hash, 'admin'))
+            c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", ('admin', p_hash, 'admin'))
         conn.commit()
 
 def verify_user(username, password):
@@ -219,8 +207,7 @@ def create_user(username, password, role):
     p_hash = hashlib.sha256(password.encode()).hexdigest()
     try:
         with sqlite3.connect(DB_NAME) as conn:
-            conn.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", 
-                         (username, p_hash, role))
+            conn.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", (username, p_hash, role))
         return True
     except sqlite3.IntegrityError:
         return False
@@ -235,8 +222,7 @@ def get_all_users():
 
 def add_activity_log(username, action, details=""):
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("INSERT INTO activity_logs (username, action, details) VALUES (?, ?, ?)", 
-                     (username, action, details))
+        conn.execute("INSERT INTO activity_logs (username, action, details) VALUES (?, ?, ?)", (username, action, details))
 
 def get_activity_logs(limit=50):
     with sqlite3.connect(DB_NAME) as conn:
@@ -250,41 +236,26 @@ def get_player_season_stats(p_id, year=None):
         row = c.fetchone()
         if not row: return {"avg": 0.0, "hr": 0, "sb": 0, "era": 0.0}
         player_name = row[0]
+        bat = get_player_detailed_stats(player_name, year=year)
         
-        query = "SELECT innings, summary FROM scorebook_batting WHERE player_name = ?"
-        c.execute(query, (player_name,))
-        rows = c.fetchall()
-        s = {"ab": 0, "h": 0, "hr": 0, "sb": 0}
-        for row_inn, row_sum in rows:
-            if row_sum:
-                sums = json.loads(row_sum)
-                if year and str(year) not in str(sums.get('date', '')):
-                    continue
-                s["sb"] += int(sums.get("sb", 0))
-            if row_inn:
-                inns = json.loads(row_inn)
-                for i in inns:
-                    res = i.get("res", "")
-                    if not res or res == "---" or any(ex in res for ex in ["四", "死", "妨", "犠"]): continue
-                    s["ab"] += 1
-                    if any(h in res for h in ["安", "2", "3", "本"]): s["h"] += 1
-                    if "本" in res: s["hr"] += 1
-        
-        p_query = "SELECT ip, er FROM scorebook_pitching WHERE player_name = ?"
-        p_params = [player_name]
-        if year:
-            p_query += " AND date LIKE ?"
-            p_params.append(f"{year}%")
-            
-        c.execute(p_query, p_params)
+        p_query = """
+            SELECT p.ip, p.er, b.summary
+            FROM scorebook_pitching p
+            LEFT JOIN (SELECT game_id, summary FROM scorebook_batting GROUP BY game_id) b ON p.game_id = b.game_id
+            WHERE p.player_name = ?
+        """
+        c.execute(p_query, (player_name,))
         p_rows = c.fetchall()
         total_ip, total_er = 0.0, 0
-        for ip_val, er_val in p_rows:
+        for ip_val, er_val, summary_json in p_rows:
+            if year:
+                summary = json.loads(summary_json) if summary_json else {}
+                if not str(summary.get('date', '')).startswith(str(year)):
+                    continue
             total_ip += float(ip_val) if ip_val else 0.0
             total_er += er_val if er_val else 0
-            
         era = (total_er * 7 / total_ip) if total_ip > 0 else 0.0
-        return {"avg": s["h"]/s["ab"] if s["ab"] > 0 else 0.0, "hr": s["hr"], "sb": s["sb"], "era": era}
+        return {"avg": bat["avg"], "hr": bat["hr"], "sb": bat["sb"], "era": era}
 
 def get_player_detailed_stats(player_name, year=None):
     with sqlite3.connect(DB_NAME) as conn:
@@ -295,28 +266,28 @@ def get_player_detailed_stats(player_name, year=None):
         for row_inn, row_sum in rows:
             if row_sum:
                 sums = json.loads(row_sum)
-                if year and str(year) not in str(sums.get('date', '')):
+                if year and not str(sums.get('date', '')).startswith(str(year)):
                     continue
                 s["rbi"] += int(sums.get("rbi", 0))
                 s["sb"] += int(sums.get("sb", 0))
-            if row_inn:
-                inns = json.loads(row_inn)
-                for i in inns:
-                    res = i.get("res", "")
-                    if not res or res == "---": continue
-                    s["pa"] += 1
-                    if any(ex in res for x in ["四", "死", "妨"] if x in res): s["bb"] += 1
-                    elif "犠飛" in res: s["sf"] += 1
-                    elif "犠" in res: pass
-                    else:
-                        s["ab"] += 1
-                        if any(h in res for h in ["安", "投安", "捕安", "一安", "二安", "三安", "遊安", "左安", "中安", "右安"]):
-                            s["h"] += 1; s["d1"] += 1
-                        elif "2" in res: s["h"] += 1; s["d2"] += 1
-                        elif "3" in res: s["h"] += 1; s["d3"] += 1
-                        elif "本" in res: s["h"] += 1; s["hr"] += 1
-                        if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
-                        if "併" in res: s["dp"] += 1
+                if row_inn:
+                    inns = json.loads(row_inn)
+                    for i in inns:
+                        res = i.get("res", "")
+                        if not res or res == "---": continue
+                        s["pa"] += 1
+                        if any(ex in res for ex in ["四", "死", "妨"]): s["bb"] += 1
+                        elif "犠飛" in res: s["sf"] += 1
+                        elif "犠" in res: pass
+                        else:
+                            s["ab"] += 1
+                            if any(h in res for h in ["安", "投安", "捕安", "一安", "二安", "三安", "遊安", "左安", "中安", "右安"]):
+                                s["h"] += 1; s["d1"] += 1
+                            elif "2" in res: s["h"] += 1; s["d2"] += 1
+                            elif "3" in res: s["h"] += 1; s["d3"] += 1
+                            elif "本" in res: s["h"] += 1; s["hr"] += 1
+                            if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
+                            if "併" in res: s["dp"] += 1
         avg = s["h"] / s["ab"] if s["ab"] > 0 else 0.0
         obp_denom = (s["ab"] + s["bb"] + s["sf"])
         obp = (s["h"] + s["bb"]) / obp_denom if obp_denom > 0 else 0.0
@@ -324,7 +295,7 @@ def get_player_detailed_stats(player_name, year=None):
         slg = tb / s["ab"] if s["ab"] > 0 else 0.0
         ops = obp + slg
         bb_k = s["bb"] / s["so"] if s["so"] > 0 else (float(s["bb"]) if s["bb"] > 0 else 0.0)
-        return {**s, "avg": avg, "obp": obp, "slg": slg, "ops": ops, "bb_k": bb_k, "era": 0.0}
+        return {**s, "avg": avg, "obp": obp, "slg": slg, "ops": ops, "bb_k": bb_k}
 
 def get_game_history():
     with sqlite3.connect(DB_NAME) as conn:
@@ -355,34 +326,48 @@ def get_pitching_stats_filtered(team_name="すべて", year=None):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
+        # 日付を取得するために打撃テーブルを game_id で1行に絞ってJOINする
         query = """
-            SELECT p.player_name as name, SUM(CAST(p.ip AS REAL)) as total_ip, SUM(p.er) as total_er,
-                   SUM(p.so) as total_so, SUM(p.win) as total_win, SUM(p.loss) as total_loss,
-                   SUM(p.save) as total_save, pl.team_name
+            SELECT p.*, pl.team_name, b.summary
             FROM scorebook_pitching p
             LEFT JOIN players pl ON p.player_name = pl.name
+            LEFT JOIN (SELECT game_id, summary FROM scorebook_batting GROUP BY game_id) b ON p.game_id = b.game_id
         """
-        params = []
-        conditions = []
-        if team_name != "すべて":
-            conditions.append("pl.team_name = ?")
-            params.append(team_name)
-        if year:
-            conditions.append("p.date LIKE ?")
-            params.append(f"{year}%")
-        
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-            
-        query += " GROUP BY p.player_name"
-        c.execute(query, params)
+        c.execute(query)
         rows = c.fetchall()
-        pitching_stats = []
+        
+        temp_dict = {}
         for row in rows:
-            data = dict(row)
+            # 日付フィルタ
+            summary = json.loads(row['summary']) if row['summary'] else {}
+            date_str = str(summary.get('date', ''))
+            if year and not date_str.startswith(str(year)):
+                continue
+            
+            # チームフィルタ
+            if team_name != "すべて" and row['team_name'] != team_name:
+                continue
+            
+            name = row['player_name']
+            if name not in temp_dict:
+                temp_dict[name] = {
+                    'name': name, 'total_ip': 0.0, 'total_er': 0, 'total_so': 0,
+                    'total_win': 0, 'total_loss': 0, 'total_save': 0, 'team_name': row['team_name']
+                }
+            
+            temp_dict[name]['total_ip'] += float(row['ip'] or 0.0)
+            temp_dict[name]['total_er'] += int(row['er'] or 0)
+            temp_dict[name]['total_so'] += int(row['so'] or 0)
+            temp_dict[name]['total_win'] += int(row['win'] or 0)
+            temp_dict[name]['total_loss'] += int(row['loss'] or 0)
+            temp_dict[name]['total_save'] += int(row['save'] or 0)
+
+        pitching_stats = []
+        for data in temp_dict.values():
             ip = data['total_ip']
             data['era'] = (data['total_er'] * 7 / ip) if ip > 0 else 0.0
             pitching_stats.append(data)
+            
         return pitching_stats
 
 def get_player_batting_history(player_name):
