@@ -221,29 +221,30 @@ def show():
                 
                 c_img, c_txt = st.columns([1, 1.8])
                 with c_img:
-                    # --- 【修正ポイント】強化された画像パス解決 ---
+                    # --- 【修正ポイント】画像検索ロジックの強化版 ---
                     img_src = "https://via.placeholder.com/150" # デフォルト画像
-                    if p_img:
-                        # 1. データベースにあるパスから「ファイル名」だけを取り出す
-                        fname = os.path.basename(p_img)
-                        github_path = os.path.join("images", fname)
-                        
-                        # 2. そのままのファイル名で存在するかチェック
-                        if os.path.exists(github_path):
-                            img_src = github_path
-                        else:
-                            # 3. ファイル名の大文字小文字や拡張子の違いを吸収する予備検索
-                            try:
-                                if os.path.exists("images"):
-                                    files = os.listdir("images")
-                                    # 拡張子を除いた「名前部分」を小文字にして比較
-                                    target_base = os.path.splitext(fname)[0].lower()
-                                    for f in files:
-                                        if os.path.splitext(f)[0].lower() == target_base:
-                                            img_src = os.path.join("images", f)
-                                            break
-                            except:
-                                pass
+                    
+                    # 選手名に基づいたベースファイル名を取得（例: "田中太郎"）
+                    # タイムスタンプが付いていても、その前の選手名部分で検索できるようにする
+                    search_base = p_name.strip()
+                    
+                    try:
+                        if os.path.exists("images"):
+                            # imagesフォルダ内の全ファイルを取得
+                            all_files = os.listdir("images")
+                            
+                            # 1. まずはDBに登録されているパスそのままで存在するか確認
+                            if p_img and os.path.exists(p_img):
+                                img_src = p_img
+                            else:
+                                # 2. ファイル名が選手名から始まり、かつ画像ファイルであるものを探す（最新順にソート）
+                                # これにより "田中太郎_20260110...jpg" などをヒットさせる
+                                matches = [f for f in all_files if f.startswith(search_base) and f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+                                if matches:
+                                    matches.sort(reverse=True) # 新しい日付のものを優先
+                                    img_src = os.path.join("images", matches[0])
+                    except Exception as e:
+                        pass
 
                     st.image(img_src, use_container_width=True)
                 
