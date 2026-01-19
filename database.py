@@ -30,12 +30,27 @@ def init_db():
     init_scheduler_db()
     init_auth_db()
 
-# --- 選手管理用関数 ---
+# --- パス解決用ヘルパー関数 (新規追加) ---
+def format_image_path(raw_path):
+    """
+    DBに保存されたパスを解析し、実行環境の images/ フォルダ配下の相対パスに変換して返す。
+    これにより、ローカル環境(venv)の絶対パスがDBに入っていても、デプロイ先で表示可能になる。
+    """
+    if not raw_path:
+        return None
+    # どんなOSのパス形式であってもファイル名だけを抜き出す
+    file_name = os.path.basename(raw_path)
+    # 常に実行ディレクトリ内の images/ ファイルを参照するように構成
+    return f"images/{file_name}"
+
+# --- 選手管理用関数 (画像パス解決を統合) ---
 def get_all_players():
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("SELECT * FROM players")
-        return c.fetchall()
+        rows = c.fetchall()
+        # image_path (インデックス5) を相対パスに変換してリストを再構成
+        return [list(row[:5]) + [format_image_path(row[5])] + list(row[6:]) for row in rows]
 
 def get_players_by_team(team_name):
     with sqlite3.connect(DB_NAME) as conn:
@@ -44,7 +59,9 @@ def get_players_by_team(team_name):
             c.execute("SELECT * FROM players")
         else:
             c.execute("SELECT * FROM players WHERE team_name = ?", (team_name,))
-        return c.fetchall()
+        rows = c.fetchall()
+        # image_path (インデックス5) を相対パスに変換してリストを再構成
+        return [list(row[:5]) + [format_image_path(row[5])] + list(row[6:]) for row in rows]
 
 def add_player(name, birthday, hometown, memo, image_path, team_name):
     with sqlite3.connect(DB_NAME) as conn:
@@ -326,7 +343,6 @@ def get_pitching_stats_filtered(team_name="すべて", year=None):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        # 日付を取得するために打撃テーブルを game_id で1行に絞ってJOINする
         query = """
             SELECT p.*, pl.team_name, b.summary
             FROM scorebook_pitching p
@@ -338,13 +354,11 @@ def get_pitching_stats_filtered(team_name="すべて", year=None):
         
         temp_dict = {}
         for row in rows:
-            # 日付フィルタ
             summary = json.loads(row['summary']) if row['summary'] else {}
             date_str = str(summary.get('date', ''))
             if year and not date_str.startswith(str(year)):
                 continue
             
-            # チームフィルタ
             if team_name != "すべて" and row['team_name'] != team_name:
                 continue
             
