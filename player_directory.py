@@ -221,17 +221,29 @@ def show():
                 
                 c_img, c_txt = st.columns([1, 1.8])
                 with c_img:
-                    # --- 【修正ポイント】パスのクリーニング ---
-                    img_src = "https://via.placeholder.com/150"
+                    # --- 【修正ポイント】強化された画像パス解決 ---
+                    img_src = "https://via.placeholder.com/150" # デフォルト画像
                     if p_img:
-                        # データベースにあるパスから「ファイル名」だけを取り出し、GitHub上の images/ と合体させる
-                        filename_only = os.path.basename(p_img)
-                        github_path = os.path.join("images", filename_only)
+                        # 1. データベースにあるパスから「ファイル名」だけを取り出す
+                        fname = os.path.basename(p_img)
+                        github_path = os.path.join("images", fname)
                         
+                        # 2. そのままのファイル名で存在するかチェック
                         if os.path.exists(github_path):
                             img_src = github_path
-                        elif os.path.exists(p_img): # 万が一そのままのパスで見つかる場合用
-                            img_src = p_img
+                        else:
+                            # 3. ファイル名の大文字小文字や拡張子の違いを吸収する予備検索
+                            try:
+                                if os.path.exists("images"):
+                                    files = os.listdir("images")
+                                    # 拡張子を除いた「名前部分」を小文字にして比較
+                                    target_base = os.path.splitext(fname)[0].lower()
+                                    for f in files:
+                                        if os.path.splitext(f)[0].lower() == target_base:
+                                            img_src = os.path.join("images", f)
+                                            break
+                            except:
+                                pass
 
                     st.image(img_src, use_container_width=True)
                 
