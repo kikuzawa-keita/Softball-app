@@ -80,7 +80,9 @@ def show():
             os.makedirs("images")
         img_obj = img_obj.convert("RGB")
         img_obj.thumbnail((400, 400))
-        path = os.path.join("images", f"{name}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+        # サーバー上では相対パスで保存するように修正
+        filename = f"{name}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+        path = os.path.join("images", filename)
         img_obj.save(path, "JPEG", quality=85)
         return path
 
@@ -219,7 +221,18 @@ def show():
                 
                 c_img, c_txt = st.columns([1, 1.8])
                 with c_img:
-                    img_src = p_img if p_img and os.path.exists(p_img) else "https://via.placeholder.com/150"
+                    # --- 【修正ポイント】パスのクリーニング ---
+                    img_src = "https://via.placeholder.com/150"
+                    if p_img:
+                        # データベースにあるパスから「ファイル名」だけを取り出し、GitHub上の images/ と合体させる
+                        filename_only = os.path.basename(p_img)
+                        github_path = os.path.join("images", filename_only)
+                        
+                        if os.path.exists(github_path):
+                            img_src = github_path
+                        elif os.path.exists(p_img): # 万が一そのままのパスで見つかる場合用
+                            img_src = p_img
+
                     st.image(img_src, use_container_width=True)
                 
                 with c_txt:
