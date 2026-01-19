@@ -251,7 +251,6 @@ def get_player_season_stats(p_id, year=None):
         if not row: return {"avg": 0.0, "hr": 0, "sb": 0, "era": 0.0}
         player_name = row[0]
         
-        # 打撃成績の年度フィルタリング
         query = "SELECT innings, summary FROM scorebook_batting WHERE player_name = ?"
         c.execute(query, (player_name,))
         rows = c.fetchall()
@@ -259,7 +258,6 @@ def get_player_season_stats(p_id, year=None):
         for row_inn, row_sum in rows:
             if row_sum:
                 sums = json.loads(row_sum)
-                # 年度指定がある場合、dateから年を判定
                 if year and str(year) not in str(sums.get('date', '')):
                     continue
                 s["sb"] += int(sums.get("sb", 0))
@@ -272,7 +270,6 @@ def get_player_season_stats(p_id, year=None):
                     if any(h in res for h in ["安", "2", "3", "本"]): s["h"] += 1
                     if "本" in res: s["hr"] += 1
         
-        # 投手成績の年度フィルタリング
         p_query = "SELECT ip, er FROM scorebook_pitching WHERE player_name = ?"
         p_params = [player_name]
         if year:
@@ -308,7 +305,7 @@ def get_player_detailed_stats(player_name, year=None):
                     res = i.get("res", "")
                     if not res or res == "---": continue
                     s["pa"] += 1
-                    if any(ex in res for ex in ["四", "死", "妨"]): s["bb"] += 1
+                    if any(ex in res for x in ["四", "死", "妨"] if x in res): s["bb"] += 1
                     elif "犠飛" in res: s["sf"] += 1
                     elif "犠" in res: pass
                     else:
@@ -350,7 +347,6 @@ def get_batting_stats_filtered(team_name="すべて", year=None):
         res = get_player_detailed_stats(p_name, year=year)
         res['name'] = p_name
         res['team'] = p[8] if len(p) > 8 else "未所属"
-        # データがある選手のみ追加
         if res['pa'] > 0:
             stats_list.append(res)
     return stats_list
