@@ -22,25 +22,35 @@ def init_db():
                       so INTEGER DEFAULT 0, np INTEGER DEFAULT 0, tbf INTEGER DEFAULT 0, h INTEGER DEFAULT 0, 
                       hr INTEGER DEFAULT 0, bb INTEGER DEFAULT 0, hbp INTEGER DEFAULT 0, r INTEGER DEFAULT 0, 
                       win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0)''')
-        try:
-            c.execute("ALTER TABLE scorebook_pitching ADD COLUMN date TEXT")
-        except sqlite3.OperationalError:
-            pass
+        
+        # カラムの存在チェックを行い、存在しない場合のみ追加（デプロイ環境のDB更新用）
+        c.execute("PRAGMA table_info(scorebook_pitching)")
+        columns = [column[1] for column in c.fetchall()]
+        if "date" not in columns:
+            try:
+                c.execute("ALTER TABLE scorebook_pitching ADD COLUMN date TEXT")
+            except sqlite3.OperationalError:
+                pass
+                
         conn.commit()
     init_scheduler_db()
     init_auth_db()
 
-# --- パス解決用ヘルパー関数 (新規追加) ---
+# --- パス解決用ヘルパー関数 ---
 def format_image_path(raw_path):
     """
-    DBに保存されたパスを解析し、実行環境の images/ フォルダ配下の相対パスに変換して返す。
-    これにより、ローカル環境(venv)の絶対パスがDBに入っていても、デプロイ先で表示可能になる。
+    DBに保存された絶対パスやWindows形式のパスを解析し、
+    デプロイ環境の images/ フォルダ配下の相対パスに変換して返す。
     """
     if not raw_path:
         return None
-    # どんなOSのパス形式であってもファイル名だけを抜き出す
-    file_name = os.path.basename(raw_path)
-    # 常に実行ディレクトリ内の images/ ファイルを参照するように構成
+    
+    # Windows形式のバックスラッシュをスラッシュに置換
+    clean_path = raw_path.replace('\\', '/')
+    # パスからファイル名のみを抽出
+    file_name = os.path.basename(clean_path)
+    
+    # GitHubリポジトリ上の images フォルダを参照する相対パスを構築
     return f"images/{file_name}"
 
 # --- 選手管理用関数 (画像パス解決を統合) ---
