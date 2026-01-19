@@ -84,10 +84,29 @@ def show():
     with st.container(border=True):
         c_img, c_info, c_memo = st.columns([1, 1.5, 2])
         with c_img:
-            if player_info["photo"] and os.path.exists(player_info["photo"]):
-                st.image(player_info["photo"], use_container_width=True)
+            # --- 【修正ポイント】強化された画像検索ロジック ---
+            img_src = None
+            search_base = selected_name.strip()
+            
+            try:
+                # 1. まずはDBにあるパスがそのまま存在するか確認
+                if player_info["photo"] and os.path.exists(player_info["photo"]):
+                    img_src = player_info["photo"]
+                elif os.path.exists("images"):
+                    # 2. imagesフォルダ内を選手名で前方一致検索
+                    all_files = os.listdir("images")
+                    matches = [f for f in all_files if f.startswith(search_base) and f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+                    if matches:
+                        matches.sort(reverse=True) # 最新のタイムスタンプを優先
+                        img_src = os.path.join("images", matches[0])
+            except:
+                pass
+
+            if img_src:
+                st.image(img_src, use_container_width=True)
             else:
                 st.markdown("<div style='background-color:#e9ecef; height:150px; border-radius:10px; display:flex; justify-content:center; align-items:center;'>👤</div>", unsafe_allow_html=True)
+        
         with c_info:
             st.subheader(selected_name)
             st.markdown(f"**所属:** {player_info['team']}")
