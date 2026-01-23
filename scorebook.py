@@ -11,7 +11,7 @@ def show():
 
     st.title("📝 スコア入力・編集")
 
-    # 冒頭にこれを追加（セッションから安全に取得）
+    # セッションから安全に取得
     role = st.session_state.get("user_role", "guest")
     username = st.session_state.get("username", "Guest")
     
@@ -28,13 +28,13 @@ def show():
         is_edit_mode = st.toggle("過去の試合を編集する", value=(st.session_state.editing_game_id is not None))
     with col_toggle2:
         # 簡易入力モードの切り替えスイッチ
-        is_simple_mode = st.toggle("簡易入力モード（安打・凡打・四死球のみ）", value=False)
+        is_simple_mode = st.toggle("簡易入力モード（主要項目のみ）", value=False)
     
     if not is_edit_mode:
         if st.session_state.editing_game_id is not None:
             st.session_state.editing_game_id = None
             st.session_state.batting_lines = []
-            st.session_state.current_batter_idx = 0 # インデックスをリセット
+            st.session_state.current_batter_idx = 0 
             st.rerun()
         current_game_id = None
     else:
@@ -56,6 +56,7 @@ def show():
 
     existing_batting = []
     existing_pitching = []
+    existing_comment = ""
 
     if is_edit_mode:
         if not game_history:
@@ -79,10 +80,9 @@ def show():
         if new_game_id != st.session_state.editing_game_id:
              st.session_state.editing_game_id = new_game_id
              st.session_state.batting_lines = []
-             st.session_state.current_batter_idx = 0 # 試合切り替え時にリセット
+             st.session_state.current_batter_idx = 0 
              st.rerun()
 
-        # DBから詳細データを取得
         with sqlite3.connect('softball.db') as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
@@ -90,6 +90,8 @@ def show():
             existing_batting = c.fetchall()
             c.execute("SELECT * FROM scorebook_pitching WHERE game_id = ?", (new_game_id,))
             existing_pitching = c.fetchall()
+        
+        existing_comment = db.get_game_comment(new_game_id)
         
         if existing_batting:
             summ_raw = existing_batting[0]['summary']
@@ -122,7 +124,6 @@ def show():
                     "results": res_list
                 })
         else:
-            # 新規作成時：15人分
             for i in range(15):
                 st.session_state.batting_lines.append({
                     "player_name": "(未選択)", "run": 0, "rbi": 0, "sb": 0, "err": 0,
@@ -130,7 +131,7 @@ def show():
                 })
 
     # --- 4. 試合基本情報入力 ---
-    with st.expander("① 試合情報の入力", expanded=not is_edit_mode):
+    with st.expander("試合情報", expanded=not is_edit_mode):
         c1, c2, c3 = st.columns(3)
         game_date = c1.date_input("試合日", value=default_game_info["date"])
         game_name = c2.text_input("大会・試合名", value=default_game_info["name"])
@@ -145,45 +146,64 @@ def show():
                                    index=0 if default_game_info["batting_order"] == "先攻 (上段)" else 1)
         
         load_score_len = len(default_game_info["inning_scores"].get("my", []))
-        total_innings = c6.number_input("イニング数", min_value=1, max_value=20, value=max(load_score_len, 7), step=1)
+        total_innings = c6.number_input("表示イニング数", min_value=1, max_value=20, value=max(load_score_len, 7), step=1)
 
     # --- 5. ランニングスコア ---
-    st.markdown("### 🔢 ランニングスコア")
+    st.markdown("### 🔢 スコアボード")
+    st.caption("※タイムアップ等で実施されなかったイニングは、数値を消去（空欄）にしてください。「―」と表示されます。")
     with st.container(border=True):
-        scores_my = (default_game_info["inning_scores"].get("my", []) + [0]*20)[:total_innings]
-        scores_opp = (default_game_info["inning_scores"].get("opp", []) + [0]*20)[:total_innings]
+        # ロードされたスコアを整形（足りない分はNoneで埋める）
+        scores_my = (default_game_info["inning_scores"].get("my", []) + [None]*20)[:total_innings]
+        scores_opp = (default_game_info["inning_scores"].get("opp", []) + [None]*20)[:total_innings]
+        
         row_my = {"チーム": f"自チーム ({my_team})", "種別": "my", "ハンデ": default_game_info["handicap_my"], **{f"{i+1}回": scores_my[i] for i in range(total_innings)}}
         row_opp = {"チーム": f"相手 ({opponent if opponent else '対戦相手'})", "種別": "opp", "ハンデ": default_game_info["handicap_opp"], **{f"{i+1}回": scores_opp[i] for i in range(total_innings)}}
+        
         score_data = [row_my, row_opp] if batting_order == "先攻 (上段)" else [row_opp, row_my]
-        column_config = {"チーム": st.column_config.TextColumn(disabled=True, width="medium"), "種別": None, "ハンデ": st.column_config.NumberColumn(min_value=0, step=1)}
-        for i in range(total_innings): column_config[f"{i+1}回"] = st.column_config.NumberColumn(min_value=0, step=1, width="small")
-        edited_score_df = st.data_editor(pd.DataFrame(score_data), column_config=column_config, hide_index=True, use_container_width=True, key="score_editor")
+        
+        column_config = {
+            "チーム": st.column_config.TextColumn(disabled=True, width="medium"), 
+            "種別": None, 
+            "ハンデ": st.column_config.NumberColumn(min_value=0, step=1)
+        }
+        # 各イニングのカラム設定。None（未実施）を「―」で視覚化
+        for i in range(total_innings): 
+            column_config[f"{i+1}回"] = st.column_config.NumberColumn(min_value=0, step=1, width="small", default=None, help="未実施なら空欄")
+
+        edited_score_df = st.data_editor(
+            pd.DataFrame(score_data), 
+            column_config=column_config, 
+            hide_index=True, 
+            use_container_width=True, 
+            key="score_editor"
+        )
+        
         rows = edited_score_df.to_dict('records')
         data_my = next(r for r in rows if r["種別"] == "my")
         data_opp = next(r for r in rows if r["種別"] == "opp")
-        sum_my = sum([int(data_my.get(f"{i+1}回", 0)) for i in range(total_innings)]) + data_my["ハンデ"]
-        sum_opp = sum([int(data_opp.get(f"{i+1}回", 0)) for i in range(total_innings)]) + data_opp["ハンデ"]
+        
+        # 合計計算（Noneは0として計算）
+        sum_my = sum([int(data_my.get(f"{i+1}回") or 0) for i in range(total_innings)]) + (data_my.get("ハンデ") or 0)
+        sum_opp = sum([int(data_opp.get(f"{i+1}回") or 0) for i in range(total_innings)]) + (data_opp.get("ハンデ") or 0)
+        
+        st.markdown(f"**合計得点: 自チーム {sum_my} - {sum_opp} {opponent if opponent else '相手'}**")
 
     # --- 6. 選手成績入力 ---
     st.markdown("---")
     
-    # モードによって選択肢を切り替え
     if is_simple_mode:
-        result_options = ["---", "安打", "2塁打", "3塁打", "本塁打", "凡退", "三振", "犠打", "犠飛", "四死球"]
+        result_options = ["---", "安打", "2塁打", "3塁打", "本塁打", "凡退", "三振", "犠打", "犠飛", "四死球", "併殺"]
     else:
         result_options = ["---", "投安", "捕安", "一安", "二安", "三安", "遊安", "左安", "中安", "右安", "左2", "中2", "右2", "左3", "中3", "右3", "左本", "中本", "右本", "投失", "捕失", "一失", "二失", "三失", "遊失", "左失", "中失", "右失", "投野", "捕野", "一野", "二野", "三野", "遊野", "投犠", "捕犠", "一犠", "二犠", "三犠", "遊犠", "左犠飛", "中犠飛", "右犠飛", "四球", "死球", "打撃妨", "振逃", "三振", "見逃", "捕ゴ", "投ゴ", "一ゴ", "二ゴ", "三ゴ", "遊ゴ", "左ゴ", "中ゴ", "右ゴ", "投飛", "捕飛", "一飛", "二飛", "三飛", "遊飛", "左飛", "中飛", "右飛", "投邪飛", "捕邪飛", "一邪飛", "二邪飛", "三邪飛", "遊邪飛", "左邪飛", "中邪飛", "右邪飛", "投直", "一直", "二直", "三直", "遊直", "左直", "中直", "右直", "投併", "捕併", "一併", "二併", "三併", "遊併", "左併", "中併", "右併"]
 
-    tab_bat, tab_pit = st.tabs([f"⚾ 打撃成績 ({'簡易' if is_simple_mode else '詳細'})", "🥎 投手成績"])
+    tab_bat, tab_pit, tab_comment = st.tabs([f"⚾ 打撃成績 ({'簡易' if is_simple_mode else '詳細'})", "🥎 投手成績", "📝 戦評"])
     player_names = ["(未選択)"] + [p[1] for p in db.get_all_players()]
 
     with tab_bat:
         col_list, col_detail = st.columns([1, 2.5])
-
         with col_list:
             st.markdown("###### 📋 打順リスト")
             list_data = [f"{idx+1}. {item['player_name']}" for idx, item in enumerate(st.session_state.batting_lines)]
-            
-            # 安全策：インデックスがリストの長さ以上なら0に戻す
             if st.session_state.current_batter_idx >= len(list_data):
                 st.session_state.current_batter_idx = 0
 
@@ -196,14 +216,11 @@ def show():
 
         with col_detail:
             idx = st.session_state.current_batter_idx
-            # 再度、インデックス範囲チェック
             if idx < len(st.session_state.batting_lines):
                 current_data = st.session_state.batting_lines[idx]
-
                 with st.container(border=True):
                     h1, h2, h3 = st.columns([2, 1, 1])
                     h1.markdown(f"##### 👤 {idx+1}番打者の成績入力")
-                    
                     if h2.button("⬆️ 前へ", disabled=(idx==0)):
                         st.session_state.current_batter_idx -= 1
                         st.rerun()
@@ -213,7 +230,6 @@ def show():
 
                     r1_1, r1_2, r1_3, r1_4, r1_5 = st.columns([3, 1, 1, 1, 1])
                     p_idx = player_names.index(current_data['player_name']) if current_data['player_name'] in player_names else 0
-                    
                     new_name = r1_1.selectbox("選手名", player_names, index=p_idx, key=f"pname_{idx}")
                     new_run = r1_2.number_input("得点", min_value=0, value=int(current_data['run']), key=f"run_{idx}")
                     new_rbi = r1_3.number_input("打点", min_value=0, value=int(current_data['rbi']), key=f"rbi_{idx}")
@@ -223,33 +239,21 @@ def show():
                     st.session_state.batting_lines[idx].update({
                         "player_name": new_name, "run": new_run, "rbi": new_rbi, "sb": new_sb, "err": new_err
                     })
-
                     st.divider()
                     st.caption("打席結果")
                     results = current_data['results']
                     new_results = results.copy()
-                    
-                    # 打席入力部分
                     cols = st.columns(4)
                     for i in range(4):
                         r_val = results[i]
-                        # 簡易モードの際、詳細データが入っていた場合のフォールバック
-                        if is_simple_mode and r_val not in result_options:
-                            r_idx = 0 
-                        else:
-                            r_idx = result_options.index(r_val) if r_val in result_options else 0
+                        r_idx = result_options.index(r_val) if r_val in result_options else 0
                         new_results[i] = cols[i].selectbox(f"第{i+1}打席", result_options, index=r_idx, key=f"res_{idx}_{i}")
-                    
                     cols2 = st.columns(4)
                     for i in range(4):
                         actual_i = i + 4
                         r_val = results[actual_i]
-                        if is_simple_mode and r_val not in result_options:
-                            r_idx = 0
-                        else:
-                            r_idx = result_options.index(r_val) if r_val in result_options else 0
+                        r_idx = result_options.index(r_val) if r_val in result_options else 0
                         new_results[actual_i] = cols2[i].selectbox(f"第{actual_i+1}打席", result_options, index=r_idx, key=f"res_{idx}_{actual_i}")
-                    
                     st.session_state.batting_lines[idx]['results'] = new_results
 
     with tab_pit:
@@ -258,22 +262,15 @@ def show():
             for p in existing_pitching:
                 pitching_rows.append({
                     "選手名": p['player_name'], 
-                    "勝": bool(p['win']), 
-                    "負": bool(p['loss']), 
-                    "S": bool(p['save']), 
-                    "投球回": float(p['ip'] or 0.0), 
-                    "球数": int(p['np'] or 0), 
-                    "打者": int(p['tbf'] or 0), 
-                    "被安": int(p['h'] or 0), 
-                    "奪三振": int(p['so'] or 0), 
-                    "四球": int(p['bb'] or 0), 
-                    "死球": int(p['hbp'] or 0), 
-                    "失点": int(p['r'] or 0), 
-                    "自責": int(p['er'] or 0)
+                    "勝": bool(p['win']), "負": bool(p['loss']), "S": bool(p['save']), 
+                    "投球回": float(p['ip'] or 0.0), "球数": int(p['np'] or 0), 
+                    "打者": int(p['tbf'] or 0), "被安": int(p['h'] or 0), "被本": int(p.get('hr', 0)),
+                    "奪三振": int(p['so'] or 0), "四球": int(p['bb'] or 0), "死球": int(p['hbp'] or 0), 
+                    "失点": int(p['r'] or 0), "自責": int(p['er'] or 0), "暴投": int(p.get('wp', 0))
                 })
         
         if not pitching_rows:
-            pitching_rows = [{"選手名": "(未選択)", "勝": False, "負": False, "S": False, "投球回": 0.0, "球数": 0, "打者": 0, "被安": 0, "奪三振": 0, "四球": 0, "死球": 0, "失点": 0, "自責": 0} for _ in range(3)]
+            pitching_rows = [{"選手名": "(未選択)", "勝": False, "負": False, "S": False, "投球回": 0.0, "球数": 0, "打者": 0, "被安": 0, "被本": 0, "奪三振": 0, "四球": 0, "死球": 0, "失点": 0, "自責": 0, "暴投": 0} for _ in range(3)]
         
         edited_pitching_df = st.data_editor(
             pd.DataFrame(pitching_rows), 
@@ -283,8 +280,22 @@ def show():
             key="pitching_editor",
             column_config={
                 "選手名": st.column_config.SelectboxColumn(options=player_names, required=True), 
-                "投球回": st.column_config.NumberColumn(format="%.1f", step=0.1)
+                "投球回": st.column_config.NumberColumn(format="%.1f", step=0.1),
+                "勝": st.column_config.CheckboxColumn(width="small"),
+                "負": st.column_config.CheckboxColumn(width="small"),
+                "S": st.column_config.CheckboxColumn(width="small")
             }
+        )
+
+    with tab_comment:
+        st.markdown("##### 📝 試合の戦評")
+        can_edit_comment = role in ["admin", "operator"]
+        game_comment = st.text_area(
+            "戦評・メモを入力してください", 
+            value=existing_comment, 
+            height=300, 
+            disabled=not can_edit_comment,
+            placeholder="試合のハイライトや反省点などを自由に入力してください。" if can_edit_comment else "戦評は登録されていません。"
         )
 
     st.divider()
@@ -293,7 +304,11 @@ def show():
     if st.button(save_label, type="primary", use_container_width=True):
         if not opponent: st.error("対戦相手を入力してください。"); return
         try:
-            inning_scores_data = {"my": [int(data_my.get(f"{i+1}回", 0)) for i in range(total_innings)], "opp": [int(data_opp.get(f"{i+1}回", 0)) for i in range(total_innings)]}
+            # ランニングスコアを保存用形式に変換
+            inning_scores_data = {
+                "my": [data_my.get(f"{i+1}回") for i in range(total_innings)], 
+                "opp": [data_opp.get(f"{i+1}回") for i in range(total_innings)]
+            }
             game_info = {
                 "name": game_name, "opponent": opponent, "date": str(game_date), 
                 "my_team": my_team, "batting_order": batting_order, 
@@ -309,19 +324,23 @@ def show():
                     "name": line["player_name"], "innings": at_bats,
                     "summary": {"run": int(line["run"]), "rbi": int(line["rbi"]), "sb": int(line["sb"]), "err": int(line["err"])}
                 })
+            
             pitching_data_list = []
             for _, r in edited_pitching_df.iterrows():
                 if r["選手名"] and r["選手名"] != "(未選択)":
                     pitching_data_list.append({
                         "name": r["選手名"], "win": 1 if r["勝"] else 0, "loss": 1 if r["負"] else 0, "save": 1 if r["S"] else 0,
                         "ip": str(r["投球回"]), "tbf": int(r.get("打者", 0)), "np": int(r.get("球数", 0)),
-                        "h": int(r.get("被安", 0)), "hr": 0, "so": int(r.get("奪三振", 0)),
-                        "bb": int(r.get("四球", 0)), "hbp": int(r.get("死球", 0)), "r": int(r.get("失点", 0)), "er": int(r.get("自責", 0))
+                        "h": int(r.get("被安", 0)), "hr": int(r.get("被本", 0)), "so": int(r.get("奪三振", 0)),
+                        "bb": int(r.get("四球", 0)), "hbp": int(r.get("死球", 0)), "r": int(r.get("失点", 0)), 
+                        "er": int(r.get("自責", 0)), "wp": int(r.get("暴投", 0))
                     })
             
             saved_id = db.save_scorebook_data(game_info, score_data_list, pitching_data_list, game_id=st.session_state.editing_game_id)
             
-            # ログ記録
+            if can_edit_comment:
+                db.save_game_comment(saved_id, game_comment)
+
             action_type = "UPDATE_GAME" if is_edit_mode else "ADD_GAME"
             db.add_activity_log(username, action_type, f"GameID: {saved_id}, vs {opponent}")
 

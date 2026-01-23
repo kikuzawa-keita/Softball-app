@@ -3,6 +3,7 @@ import database as db
 import json
 import pandas as pd
 import sqlite3
+import textwrap
 
 def show():
     st.title("🗓️ 試合結果一覧")
@@ -92,7 +93,7 @@ def show():
         """
         st.markdown(header_html, unsafe_allow_html=True)
 
-        with st.expander("詳細データ（スコア・成績）"):
+        with st.expander("詳細データ（スコア・成績・戦評）"):
             # 削除ボタンのみ配置 (Adminのみ)
             if role == "admin":
                 if st.button("🗑️ 試合データを削除", key=f"del_{g_id}", type="secondary"):
@@ -104,7 +105,8 @@ def show():
                                 # database.pyの構成に合わせ、関連テーブルから削除
                                 conn.execute("DELETE FROM scorebook_batting WHERE game_id = ?", (gid,))
                                 conn.execute("DELETE FROM scorebook_pitching WHERE game_id = ?", (gid,))
-                                # 試合サマリーも削除する場合はここに追加
+                                # 戦評も削除
+                                conn.execute("DELETE FROM game_comments WHERE game_id = ?", (gid,))
                                 conn.execute("DELETE FROM games WHERE id = ?", (gid,))
                                 conn.commit()
                             db.add_activity_log(username, "DELETE_GAME", f"Deleted GameID: {gid}")
@@ -127,22 +129,42 @@ def show():
             except Exception:
                 st.info(f"スコア: {row['得点']} - {row['失点']}")
 
-            # 成績詳細タブ
-            t1, t2 = st.tabs(["⚾ 打撃成績", "🥎 投手成績"])
+            # 成績詳細・戦評タブ
+            t1, t2, t3 = st.tabs(["⚾ 打撃成績", "🥎 投手成績", "📝 戦評"])
             with t1:
                 with sqlite3.connect('softball.db') as conn:
-                    b_df = pd.read_sql("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ?", conn, params=(g_id,))
-                if not b_df.empty:
+                    b_df_raw = pd.read_sql("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ?", conn, params=(g_id,))
+                
+                if not b_df_raw.empty:
                     rows_data = []
-                    for _, db_r in b_df.iterrows():
-                        inns = json.loads(db_r['innings'])
-                        summ = json.loads(db_r['summary'])
+                    for _, db_r in b_df_raw.iterrows():
+                        # JSONを安全にロード
+                        try:
+                            inns_list = json.loads(db_r['innings']) if isinstance(db_r['innings'], str) else db_r['innings']
+                            summ_dict = json.loads(db_r['summary']) if isinstance(db_r['summary'], str) else db_r['summary']
+                        except:
+                            inns_list = []
+                            summ_dict = {}
+
                         d = {"選手名": db_r['player_name']}
-                        for i, inn in enumerate(inns):
+                        
+                        # 各打席の結果を展開
+                        for i, inn in enumerate(inns_list):
                             d[f"{i+1}打席"] = inn.get('res', '---')
-                        d.update({"打点": summ.get('rbi', 0), "盗塁": summ.get('sb', 0), "得点": summ.get('run', 0), "失策": summ.get('err', 0)})
+                        
+                        # サマリーを追加
+                        d.update({
+                            "打点": summ_dict.get('rbi', 0),
+                            "盗塁": summ_dict.get('sb', 0),
+                            "得点": summ_dict.get('run', 0),
+                            "失策": summ_dict.get('err', 0)
+                        })
                         rows_data.append(d)
-                    st.dataframe(pd.DataFrame(rows_data).set_index("選手名"), use_container_width=True)
+                    
+                    # リストからDataFrameを作成
+                    display_b_df = pd.DataFrame(rows_data)
+                    if not display_b_df.empty:
+                        st.dataframe(display_b_df.set_index("選手名"), use_container_width=True)
                 else:
                     st.caption("打撃データなし")
 
@@ -157,5 +179,18 @@ def show():
                     st.dataframe(p_display.set_index("選手名"), use_container_width=True)
                 else:
                     st.caption("投手データなし")
+
+            with t3:
+                comment = db.get_game_comment(g_id)
+                if comment:
+                    # 空行維持の処理
+                    processed_comment = comment.replace('\n\n', '\n&nbsp;\n')
+                    st.markdown(f"""
+<div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #ddd; min-height: 100px; white-space: pre-wrap; line-height: 1.6; color: #333;">
+{processed_comment}
+</div>
+""", unsafe_allow_html=True)
+                else:
+                    st.info("この試合の戦評はまだ登録されていません。")
 
         st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)

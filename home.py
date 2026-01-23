@@ -13,7 +13,6 @@ def show():
         display_name = st.session_state.username
 
     st.title("⚾ ソフトボール管理システム")
-    st.write(f"ようこそ、**{display_name}** さん！")
 
     st.info("本サービスはオープンβテスト中です。左のメニューから各機能を選択してください。")
 

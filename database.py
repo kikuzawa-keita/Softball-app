@@ -21,14 +21,22 @@ def init_db():
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER, player_name TEXT, ip TEXT, er INTEGER,
                       so INTEGER DEFAULT 0, np INTEGER DEFAULT 0, tbf INTEGER DEFAULT 0, h INTEGER DEFAULT 0, 
                       hr INTEGER DEFAULT 0, bb INTEGER DEFAULT 0, hbp INTEGER DEFAULT 0, r INTEGER DEFAULT 0, 
-                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0)''')
+                      win INTEGER DEFAULT 0, loss INTEGER DEFAULT 0, save INTEGER DEFAULT 0, wp INTEGER DEFAULT 0)''')
         
-        # カラムの存在チェックを行い、存在しない場合のみ追加（デプロイ環境のDB更新用）
+        c.execute('''CREATE TABLE IF NOT EXISTS scorebook_comments
+                     (game_id INTEGER PRIMARY KEY, comment TEXT)''')
+
+        # 既存DBへのカラム追加チェック
         c.execute("PRAGMA table_info(scorebook_pitching)")
         columns = [column[1] for column in c.fetchall()]
         if "date" not in columns:
             try:
                 c.execute("ALTER TABLE scorebook_pitching ADD COLUMN date TEXT")
+            except sqlite3.OperationalError:
+                pass
+        if "wp" not in columns:
+            try:
+                c.execute("ALTER TABLE scorebook_pitching ADD COLUMN wp INTEGER DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
                 
@@ -38,28 +46,18 @@ def init_db():
 
 # --- パス解決用ヘルパー関数 ---
 def format_image_path(raw_path):
-    """
-    DBに保存された絶対パスやWindows形式のパスを解析し、
-    デプロイ環境の images/ フォルダ配下の相対パスに変換して返す。
-    """
     if not raw_path:
         return None
-    
-    # Windows形式のバックスラッシュをスラッシュに置換
     clean_path = raw_path.replace('\\', '/')
-    # パスからファイル名のみを抽出
     file_name = os.path.basename(clean_path)
-    
-    # GitHubリポジトリ上の images フォルダを参照する相対パスを構築
     return f"images/{file_name}"
 
-# --- 選手管理用関数 (画像パス解決を統合) ---
+# --- 選手管理用関数 ---
 def get_all_players():
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("SELECT * FROM players")
         rows = c.fetchall()
-        # image_path (インデックス5) を相対パスに変換してリストを再構成
         return [list(row[:5]) + [format_image_path(row[5])] + list(row[6:]) for row in rows]
 
 def get_players_by_team(team_name):
@@ -70,7 +68,6 @@ def get_players_by_team(team_name):
         else:
             c.execute("SELECT * FROM players WHERE team_name = ?", (team_name,))
         rows = c.fetchall()
-        # image_path (インデックス5) を相対パスに変換してリストを再構成
         return [list(row[:5]) + [format_image_path(row[5])] + list(row[6:]) for row in rows]
 
 def add_player(name, birthday, hometown, memo, image_path, team_name):
@@ -93,6 +90,20 @@ def update_player_video(p_id, url):
         c.execute("UPDATE players SET video_url = ? WHERE id = ?", (url, p_id))
         conn.commit()
 
+# --- 戦評用関数 ---
+def save_game_comment(game_id, comment):
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO scorebook_comments (game_id, comment) VALUES (?, ?)", (game_id, comment))
+        conn.commit()
+
+def get_game_comment(game_id):
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("SELECT comment FROM scorebook_comments WHERE game_id = ?", (game_id,))
+        result = c.fetchone()
+        return result[0] if result else ""
+
 # --- スコア保存・修正用関数 ---
 def save_scorebook_data(game_info, score_data, pitching_data, game_id=None):
     with sqlite3.connect(DB_NAME) as conn:
@@ -114,9 +125,10 @@ def save_scorebook_data(game_info, score_data, pitching_data, game_id=None):
                       (game_id, player['name'], json.dumps(player['innings']), json.dumps({**player['summary'], **game_info}), dp_count))
         
         for p in pitching_data:
-            c.execute("""INSERT INTO scorebook_pitching (game_id, player_name, ip, er, so, np, tbf, h, hr, bb, hbp, r, win, loss, save, date) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (game_id, p['name'], p['ip'], p['er'], p['so'], p['np'], p['tbf'], p['h'], p['hr'], p['bb'], p['hbp'], p['r'], p['win'], p['loss'], p['save'], game_date))
+            c.execute("""INSERT INTO scorebook_pitching (game_id, player_name, ip, er, so, np, tbf, h, hr, bb, hbp, r, win, loss, save, date, wp) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (game_id, p['name'], p['ip'], p['er'], p['so'], p.get('np', 0), p.get('tbf', 0), p.get('h', 0), 
+                       p.get('hr', 0), p.get('bb', 0), p.get('hbp', 0), p.get('r', 0), p['win'], p['loss'], p['save'], game_date, p.get('wp', 0)))
         conn.commit()
         return game_id
 
@@ -227,8 +239,9 @@ def verify_user(username, password):
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
         c.execute("SELECT role FROM users WHERE username = ? AND password_hash = ?", (username, p_hash))
+        # return result[0] if result else None
         result = c.fetchone()
-    return result[0] if result else None
+        return result[0] if result else None
 
 def create_user(username, password, role):
     p_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -289,40 +302,54 @@ def get_player_detailed_stats(player_name, year=None):
         c = conn.cursor()
         c.execute("SELECT innings, summary FROM scorebook_batting WHERE player_name = ?", (player_name,))
         rows = c.fetchall()
-        s = {"pa": 0, "ab": 0, "h": 0, "d1": 0, "d2": 0, "d3": 0, "hr": 0, "bb": 0, "sf": 0, "so": 0, "rbi": 0, "sb": 0, "dp": 0}
+        s = {
+            "g": 0, "pa": 0, "ab": 0, "h": 0, "h1": 0, "h2": 0, "h3": 0, "hr": 0,
+            "bb": 0, "hbp": 0, "sh": 0, "sf": 0, "so": 0, "rbi": 0, "sb": 0, 
+            "run": 0, "err": 0, "dp": 0
+        }
         for row_inn, row_sum in rows:
             if row_sum:
                 sums = json.loads(row_sum)
                 if year and not str(sums.get('date', '')).startswith(str(year)):
                     continue
+                s["g"] += 1
                 s["rbi"] += int(sums.get("rbi", 0))
                 s["sb"] += int(sums.get("sb", 0))
+                s["run"] += int(sums.get("run", 0))
+                s["err"] += int(sums.get("err", 0))
+                
                 if row_inn:
                     inns = json.loads(row_inn)
                     for i in inns:
                         res = i.get("res", "")
                         if not res or res == "---": continue
                         s["pa"] += 1
-                        if any(ex in res for ex in ["四", "死", "妨"]): s["bb"] += 1
+                        
+                        is_hit = any(h in res for h in ["安", "2", "3", "本"])
+                        if is_hit:
+                            s["h"] += 1
+                            if "2" in res: s["h2"] += 1
+                            elif "3" in res: s["h3"] += 1
+                            elif "本" in res: s["hr"] += 1
+                            else: s["h1"] += 1
+                        
+                        if "四" in res: s["bb"] += 1
+                        elif "死" in res: s["hbp"] += 1
                         elif "犠飛" in res: s["sf"] += 1
-                        elif "犠" in res: pass
-                        else:
-                            s["ab"] += 1
-                            if any(h in res for h in ["安", "投安", "捕安", "一安", "二安", "三安", "遊安", "左安", "中安", "右安"]):
-                                s["h"] += 1; s["d1"] += 1
-                            elif "2" in res: s["h"] += 1; s["d2"] += 1
-                            elif "3" in res: s["h"] += 1; s["d3"] += 1
-                            elif "本" in res: s["h"] += 1; s["hr"] += 1
-                            if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
-                            if "併" in res: s["dp"] += 1
+                        elif "犠" in res: s["sh"] += 1
+                        
+                        if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
+                        if "併" in res: s["dp"] += 1
+
+        s["ab"] = s["pa"] - (s["bb"] + s["hbp"] + s["sh"] + s["sf"])
         avg = s["h"] / s["ab"] if s["ab"] > 0 else 0.0
-        obp_denom = (s["ab"] + s["bb"] + s["sf"])
-        obp = (s["h"] + s["bb"]) / obp_denom if obp_denom > 0 else 0.0
-        tb = (s["d1"] + s["d2"]*2 + s["d3"]*3 + s["hr"]*4)
+        obp_denom = (s["ab"] + s["bb"] + s["hbp"] + s["sf"])
+        obp = (s["h"] + s["bb"] + s["hbp"]) / obp_denom if obp_denom > 0 else 0.0
+        tb = (s["h1"] + s["h2"]*2 + s["h3"]*3 + s["hr"]*4)
         slg = tb / s["ab"] if s["ab"] > 0 else 0.0
         ops = obp + slg
-        bb_k = s["bb"] / s["so"] if s["so"] > 0 else (float(s["bb"]) if s["bb"] > 0 else 0.0)
-        return {**s, "avg": avg, "obp": obp, "slg": slg, "ops": ops, "bb_k": bb_k}
+        
+        return {**s, "avg": avg, "obp": obp, "slg": slg, "ops": ops}
 
 def get_game_history():
     with sqlite3.connect(DB_NAME) as conn:
@@ -349,12 +376,13 @@ def get_batting_stats_filtered(team_name="すべて", year=None):
             stats_list.append(res)
     return stats_list
 
+# --- 投手成績集計の拡充 ---
 def get_pitching_stats_filtered(team_name="すべて", year=None):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         query = """
-            SELECT p.*, pl.team_name, b.summary
+            SELECT p.*, pl.team_name, b.summary as game_summary
             FROM scorebook_pitching p
             LEFT JOIN players pl ON p.player_name = pl.name
             LEFT JOIN (SELECT game_id, summary FROM scorebook_batting GROUP BY game_id) b ON p.game_id = b.game_id
@@ -364,31 +392,45 @@ def get_pitching_stats_filtered(team_name="すべて", year=None):
         
         temp_dict = {}
         for row in rows:
-            summary = json.loads(row['summary']) if row['summary'] else {}
+            # 日付フィルタ
+            summary = json.loads(row['game_summary']) if row['game_summary'] else {}
             date_str = str(summary.get('date', ''))
             if year and not date_str.startswith(str(year)):
                 continue
             
+            # チームフィルタ
             if team_name != "すべて" and row['team_name'] != team_name:
                 continue
             
             name = row['player_name']
             if name not in temp_dict:
                 temp_dict[name] = {
-                    'name': name, 'total_ip': 0.0, 'total_er': 0, 'total_so': 0,
+                    'name': name, 'g': 0, 'total_ip': 0.0, 'total_er': 0, 'total_r': 0,
+                    'total_so': 0, 'total_bb': 0, 'total_hbp': 0, 'total_h': 0, 
+                    'total_hr': 0, 'total_np': 0, 'total_wp': 0,
                     'total_win': 0, 'total_loss': 0, 'total_save': 0, 'team_name': row['team_name']
                 }
             
-            temp_dict[name]['total_ip'] += float(row['ip'] or 0.0)
-            temp_dict[name]['total_er'] += int(row['er'] or 0)
-            temp_dict[name]['total_so'] += int(row['so'] or 0)
-            temp_dict[name]['total_win'] += int(row['win'] or 0)
-            temp_dict[name]['total_loss'] += int(row['loss'] or 0)
-            temp_dict[name]['total_save'] += int(row['save'] or 0)
+            stats = temp_dict[name]
+            stats['g'] += 1
+            stats['total_ip'] += float(row['ip'] or 0.0)
+            stats['total_er'] += int(row['er'] or 0)
+            stats['total_r'] += int(row['r'] or 0)
+            stats['total_so'] += int(row['so'] or 0)
+            stats['total_bb'] += int(row['bb'] or 0)
+            stats['total_hbp'] += int(row['hbp'] or 0)
+            stats['total_h'] += int(row['h'] or 0)
+            stats['total_hr'] += int(row['hr'] or 0)
+            stats['total_np'] += int(row['np'] or 0)
+            stats['total_wp'] += int(row['wp'] or 0)
+            stats['total_win'] += int(row['win'] or 0)
+            stats['total_loss'] += int(row['loss'] or 0)
+            stats['total_save'] += int(row['save'] or 0)
 
         pitching_stats = []
         for data in temp_dict.values():
             ip = data['total_ip']
+            # 防御率計算 (自責点 * 7 / 投球回) ※ソフトボール想定
             data['era'] = (data['total_er'] * 7 / ip) if ip > 0 else 0.0
             pitching_stats.append(data)
             
@@ -404,8 +446,14 @@ def get_player_batting_history(player_name):
         cumulative_h, cumulative_ab = 0, 0
         for row in rows:
             data = json.loads(row['summary'])
-            date = data.get('date', '不明'); h = int(data.get('h', 0)); ab = int(data.get('ab', 0))
-            cumulative_h += h; cumulative_ab += ab
+            date = data.get('date', '不明')
+            # キーが 'h' か 'hit' か 'h1'~'hr' の合計か、保存時のキーに合わせる必要がある
+            # ここでは get_player_detailed_stats と同様の集計ロジックを簡易適用
+            h = int(data.get('h', 0))
+            ab = int(data.get('ab', 0))
+            
+            cumulative_h += h
+            cumulative_ab += ab
             current_avg = cumulative_h / cumulative_ab if cumulative_ab > 0 else 0.0
             history.append({"日付": date, "打率": round(current_avg, 3), "安打": h})
         return history
