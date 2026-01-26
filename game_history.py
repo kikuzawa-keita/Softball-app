@@ -6,21 +6,27 @@ import sqlite3
 import textwrap
 
 def show():
+    # --- 0. ログインチェックと club_id 取得 ---
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
     st.title("🗓️ 試合結果一覧")
 
-    # 冒頭にこれを追加（セッションから安全に取得）
+    # セッションから安全に取得
     role = st.session_state.get("user_role", "guest")
     username = st.session_state.get("username", "Guest")
     
-    # 1. データ取得 (database.py の get_game_history を使用)
-    history = db.get_game_history()
+    # 1. データ取得 (club_id を渡して自チームの履歴のみ取得)
+    history = db.get_game_history(club_id)
     if not history:
         st.info("試合データがありません。")
         return
 
     df = pd.DataFrame(history)
     
-    # カラム名マッピング (database.py の JSONキー名に合わせる)
+    # カラム名マッピング
     mapping = {
         'date': '日付', 'opponent': '相手', 'name': '大会・試合名', 
         'my_team': '自チーム', 'total_my': '得点', 'total_opp': '失点', 
@@ -55,9 +61,9 @@ def show():
     for _, row in filtered_df.iterrows():
         g_id = row['ID']
         
-        # 投手成績から勝敗フラグがあるか確認
+        # 投手成績から勝敗フラグがあるか確認 (club_idも含めてチェック)
         with sqlite3.connect('softball.db') as conn:
-            p_check = pd.read_sql("SELECT win, loss FROM scorebook_pitching WHERE game_id = ?", conn, params=(g_id,))
+            p_check = pd.read_sql("SELECT win, loss FROM scorebook_pitching WHERE game_id = ? AND club_id = ?", conn, params=(g_id, club_id))
         
         has_win = (p_check['win'] == 1).any() if not p_check.empty else False
         has_loss = (p_check['loss'] == 1).any() if not p_check.empty else False
@@ -94,25 +100,23 @@ def show():
         st.markdown(header_html, unsafe_allow_html=True)
 
         with st.expander("詳細データ（スコア・成績・戦評）"):
-            # 削除ボタンのみ配置 (Adminのみ)
+            # 削除ボタンのみ配置 (Adminのみ & club_id一致確認)
             if role == "admin":
                 if st.button("🗑️ 試合データを削除", key=f"del_{g_id}", type="secondary"):
                     @st.dialog("削除の確認")
-                    def confirm_delete(gid):
+                    def confirm_delete(gid, cid):
                         st.warning("この試合データを完全に削除しますか？この操作は取り消せません。")
                         if st.button("はい、削除します", type="primary", use_container_width=True, key=f"conf_del_{gid}"):
                             with sqlite3.connect('softball.db') as conn:
-                                # database.pyの構成に合わせ、関連テーブルから削除
-                                conn.execute("DELETE FROM scorebook_batting WHERE game_id = ?", (gid,))
-                                conn.execute("DELETE FROM scorebook_pitching WHERE game_id = ?", (gid,))
-                                # 戦評も削除
-                                conn.execute("DELETE FROM game_comments WHERE game_id = ?", (gid,))
-                                conn.execute("DELETE FROM games WHERE id = ?", (gid,))
+                                # scorebook_batting, scorebook_pitching, scorebook_comments の3箇所を削除
+                                conn.execute("DELETE FROM scorebook_batting WHERE game_id = ? AND club_id = ?", (gid, cid))
+                                conn.execute("DELETE FROM scorebook_pitching WHERE game_id = ? AND club_id = ?", (gid, cid))
+                                conn.execute("DELETE FROM scorebook_comments WHERE game_id = ? AND club_id = ?", (gid, cid))
                                 conn.commit()
-                            db.add_activity_log(username, "DELETE_GAME", f"Deleted GameID: {gid}")
+                            db.add_activity_log(username, "DELETE_GAME", f"Deleted GameID: {gid} (Club: {cid})", cid)
                             st.success("試合データを削除しました。")
                             st.rerun()
-                    confirm_delete(g_id)
+                    confirm_delete(g_id, club_id)
 
             # スコア表
             try:
@@ -133,12 +137,12 @@ def show():
             t1, t2, t3 = st.tabs(["⚾ 打撃成績", "🥎 投手成績", "📝 戦評"])
             with t1:
                 with sqlite3.connect('softball.db') as conn:
-                    b_df_raw = pd.read_sql("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ?", conn, params=(g_id,))
+                    # club_id でフィルタリング
+                    b_df_raw = pd.read_sql("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ? AND club_id = ?", conn, params=(g_id, club_id))
                 
                 if not b_df_raw.empty:
                     rows_data = []
                     for _, db_r in b_df_raw.iterrows():
-                        # JSONを安全にロード
                         try:
                             inns_list = json.loads(db_r['innings']) if isinstance(db_r['innings'], str) else db_r['innings']
                             summ_dict = json.loads(db_r['summary']) if isinstance(db_r['summary'], str) else db_r['summary']
@@ -147,12 +151,9 @@ def show():
                             summ_dict = {}
 
                         d = {"選手名": db_r['player_name']}
-                        
-                        # 各打席の結果を展開
                         for i, inn in enumerate(inns_list):
                             d[f"{i+1}打席"] = inn.get('res', '---')
                         
-                        # サマリーを追加
                         d.update({
                             "打点": summ_dict.get('rbi', 0),
                             "盗塁": summ_dict.get('sb', 0),
@@ -161,7 +162,6 @@ def show():
                         })
                         rows_data.append(d)
                     
-                    # リストからDataFrameを作成
                     display_b_df = pd.DataFrame(rows_data)
                     if not display_b_df.empty:
                         st.dataframe(display_b_df.set_index("選手名"), use_container_width=True)
@@ -170,20 +170,21 @@ def show():
 
             with t2:
                 with sqlite3.connect('softball.db') as conn:
+                     # club_id でフィルタリング
                      p_display = pd.read_sql("""
                         SELECT player_name as 選手名, win as 勝, loss as 負, ip as 投球回, 
-                               np as 球数, h as 被安, so as 奪三振, r as 失点 
-                        FROM scorebook_pitching WHERE game_id = ?
-                    """, conn, params=(g_id,))
+                                np as 球数, h as 被安, so as 奪三振, r as 失点 
+                        FROM scorebook_pitching WHERE game_id = ? AND club_id = ?
+                    """, conn, params=(g_id, club_id))
                 if not p_display.empty:
                     st.dataframe(p_display.set_index("選手名"), use_container_width=True)
                 else:
                     st.caption("投手データなし")
 
             with t3:
-                comment = db.get_game_comment(g_id)
+                # club_id 対応の戦評取得
+                comment = db.get_game_comment(g_id, club_id)
                 if comment:
-                    # 空行維持の処理
                     processed_comment = comment.replace('\n\n', '\n&nbsp;\n')
                     st.markdown(f"""
 <div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #ddd; min-height: 100px; white-space: pre-wrap; line-height: 1.6; color: #333;">

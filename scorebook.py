@@ -6,6 +6,13 @@ from datetime import datetime, date
 import sqlite3
 
 def show():
+
+    # --- 0. ログインチェックと club_id 取得 ---
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
     # データベース初期化
     db.init_db()
 
@@ -15,7 +22,27 @@ def show():
     role = st.session_state.get("user_role", "guest")
     username = st.session_state.get("username", "Guest")
     
-    # --- 1. セッション状態の初期化 ---
+    # --- プラン情報の取得と制限チェック ---
+    plan_info = db.get_club_plan(club_id)
+    plan_type = plan_info.get("plan_type", "free")
+    max_games = plan_info.get("max_games", 30)
+    
+    # 今年の試合数を取得
+    current_year = date.today().year
+    yearly_game_count = db.get_yearly_game_count(club_id, current_year)
+    
+    is_game_limit_reached = (plan_type == "free" and yearly_game_count >= max_games)
+
+    # --- 1. 制限メッセージの表示とブロック ---
+    if is_game_limit_reached:
+        st.warning(f"⚠️ 無料版の年間試合登録上限（{max_games}試合）に達しています。新規登録および既存データの編集（上書き保存）は制限されています。有料プランへのアップグレードをご検討ください。")
+        
+        # 「過去の試合を閲覧する」セレクトボックスは削除しました
+        
+        # 操作禁止のためここで終了
+        return 
+
+    # --- 2. セッション状態の初期化 ---
     if "editing_game_id" not in st.session_state:
         st.session_state.editing_game_id = None
     if "batting_lines" not in st.session_state:
@@ -27,7 +54,6 @@ def show():
     with col_toggle1:
         is_edit_mode = st.toggle("過去の試合を編集する", value=(st.session_state.editing_game_id is not None))
     with col_toggle2:
-        # 簡易入力モードの切り替えスイッチ
         is_simple_mode = st.toggle("簡易入力モード（主要項目のみ）", value=False)
     
     if not is_edit_mode:
@@ -40,8 +66,8 @@ def show():
     else:
         current_game_id = st.session_state.editing_game_id
 
-    # --- 2. データのロード準備 ---
-    game_history = db.get_game_history()
+    # --- 3. データのロード準備 (club_id対応) ---
+    game_history = db.get_game_history(club_id)
     
     default_game_info = {
         "date": date.today(),
@@ -83,15 +109,16 @@ def show():
              st.session_state.current_batter_idx = 0 
              st.rerun()
 
+        # club_id を含めてデータをロード
         with sqlite3.connect('softball.db') as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ?", (new_game_id,))
+            c.execute("SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ? AND club_id = ?", (new_game_id, club_id))
             existing_batting = c.fetchall()
-            c.execute("SELECT * FROM scorebook_pitching WHERE game_id = ?", (new_game_id,))
+            c.execute("SELECT * FROM scorebook_pitching WHERE game_id = ? AND club_id = ?", (new_game_id, club_id))
             existing_pitching = c.fetchall()
         
-        existing_comment = db.get_game_comment(new_game_id)
+        existing_comment = db.get_game_comment(new_game_id, club_id)
         
         if existing_batting:
             summ_raw = existing_batting[0]['summary']
@@ -106,11 +133,11 @@ def show():
                 "my_team": meta_json.get("my_team", "未所属"),
                 "batting_order": meta_json.get("batting_order", "先攻 (上段)"),
                 "inning_scores": inn_scores,
-                "handicap_my": int(meta_json.get("handicap_my", 0)),
-                "handicap_opp": int(meta_json.get("handicap_opp", 0)),
+                "handicap_my": int(meta_json.get("handicap_my") or 0),
+                "handicap_opp": int(meta_json.get("handicap_opp") or 0),
             })
 
-    # --- 3. 打撃データのセッション管理 ---
+    # --- 4. 打撃データのセッション管理 ---
     if not st.session_state.batting_lines:
         if is_edit_mode and existing_batting:
             for rb in existing_batting:
@@ -130,7 +157,7 @@ def show():
                     "results": ["---"] * 8
                 })
 
-    # --- 4. 試合基本情報入力 ---
+    # --- 5. 試合基本情報入力 (club_id対応) ---
     with st.expander("試合情報", expanded=not is_edit_mode):
         c1, c2, c3 = st.columns(3)
         game_date = c1.date_input("試合日", value=default_game_info["date"])
@@ -138,7 +165,7 @@ def show():
         opponent = c3.text_input("対戦相手", value=default_game_info["opponent"])
 
         c4, c5, c6 = st.columns(3)
-        all_teams = db.get_all_teams()
+        all_teams = db.get_all_teams_in_order(club_id)
         team_idx = all_teams.index(default_game_info["my_team"]) if default_game_info["my_team"] in all_teams else 0
         my_team = c4.selectbox("自チーム", all_teams, index=team_idx)
         batting_order = c5.radio("自チームの攻撃", ["先攻 (上段)", "後攻 (下段)"], 
@@ -148,11 +175,9 @@ def show():
         load_score_len = len(default_game_info["inning_scores"].get("my", []))
         total_innings = c6.number_input("表示イニング数", min_value=1, max_value=20, value=max(load_score_len, 7), step=1)
 
-    # --- 5. ランニングスコア ---
+    # --- 6. ランニングスコア ---
     st.markdown("### 🔢 スコアボード")
-    st.caption("※タイムアップ等で実施されなかったイニングは、数値を消去（空欄）にしてください。「―」と表示されます。")
     with st.container(border=True):
-        # ロードされたスコアを整形（足りない分はNoneで埋める）
         scores_my = (default_game_info["inning_scores"].get("my", []) + [None]*20)[:total_innings]
         scores_opp = (default_game_info["inning_scores"].get("opp", []) + [None]*20)[:total_innings]
         
@@ -166,9 +191,8 @@ def show():
             "種別": None, 
             "ハンデ": st.column_config.NumberColumn(min_value=0, step=1)
         }
-        # 各イニングのカラム設定。None（未実施）を「―」で視覚化
         for i in range(total_innings): 
-            column_config[f"{i+1}回"] = st.column_config.NumberColumn(min_value=0, step=1, width="small", default=None, help="未実施なら空欄")
+            column_config[f"{i+1}回"] = st.column_config.NumberColumn(min_value=0, step=1, width="small", default=None)
 
         edited_score_df = st.data_editor(
             pd.DataFrame(score_data), 
@@ -182,22 +206,24 @@ def show():
         data_my = next(r for r in rows if r["種別"] == "my")
         data_opp = next(r for r in rows if r["種別"] == "opp")
         
-        # 合計計算（Noneは0として計算）
-        sum_my = sum([int(data_my.get(f"{i+1}回") or 0) for i in range(total_innings)]) + (data_my.get("ハンデ") or 0)
-        sum_opp = sum([int(data_opp.get(f"{i+1}回") or 0) for i in range(total_innings)]) + (data_opp.get("ハンデ") or 0)
+        def safe_int(v):
+            if pd.isna(v) or v == "" or v is None: return 0
+            return int(v)
+        
+        sum_my = sum([safe_int(data_my.get(f"{i+1}回")) for i in range(total_innings)]) + safe_int(data_my.get("ハンデ"))
+        sum_opp = sum([safe_int(data_opp.get(f"{i+1}回")) for i in range(total_innings)]) + safe_int(data_opp.get("ハンデ"))
         
         st.markdown(f"**合計得点: 自チーム {sum_my} - {sum_opp} {opponent if opponent else '相手'}**")
 
-    # --- 6. 選手成績入力 ---
+    # --- 7. 選手成績入力 (club_id対応) ---
     st.markdown("---")
-    
     if is_simple_mode:
         result_options = ["---", "安打", "2塁打", "3塁打", "本塁打", "凡退", "三振", "犠打", "犠飛", "四死球", "併殺"]
     else:
         result_options = ["---", "投安", "捕安", "一安", "二安", "三安", "遊安", "左安", "中安", "右安", "左2", "中2", "右2", "左3", "中3", "右3", "左本", "中本", "右本", "投失", "捕失", "一失", "二失", "三失", "遊失", "左失", "中失", "右失", "投野", "捕野", "一野", "二野", "三野", "遊野", "投犠", "捕犠", "一犠", "二犠", "三犠", "遊犠", "左犠飛", "中犠飛", "右犠飛", "四球", "死球", "打撃妨", "振逃", "三振", "見逃", "捕ゴ", "投ゴ", "一ゴ", "二ゴ", "三ゴ", "遊ゴ", "左ゴ", "中ゴ", "右ゴ", "投飛", "捕飛", "一飛", "二飛", "三飛", "遊飛", "左飛", "中飛", "右飛", "投邪飛", "捕邪飛", "一邪飛", "二邪飛", "三邪飛", "遊邪飛", "左邪飛", "中邪飛", "右邪飛", "投直", "一直", "二直", "三直", "遊直", "左直", "中直", "右直", "投併", "捕併", "一併", "二併", "三併", "遊併", "左併", "中併", "右併"]
 
     tab_bat, tab_pit, tab_comment = st.tabs([f"⚾ 打撃成績 ({'簡易' if is_simple_mode else '詳細'})", "🥎 投手成績", "📝 戦評"])
-    player_names = ["(未選択)"] + [p[1] for p in db.get_all_players()]
+    player_names = ["(未選択)"] + [p[1] for p in db.get_all_players(club_id)]
 
     with tab_bat:
         col_list, col_detail = st.columns([1, 2.5])
@@ -240,7 +266,6 @@ def show():
                         "player_name": new_name, "run": new_run, "rbi": new_rbi, "sb": new_sb, "err": new_err
                     })
                     st.divider()
-                    st.caption("打席結果")
                     results = current_data['results']
                     new_results = results.copy()
                     cols = st.columns(4)
@@ -260,13 +285,15 @@ def show():
         pitching_rows = []
         if is_edit_mode and existing_pitching:
             for p in existing_pitching:
+                hr_val = p['hr'] if 'hr' in p.keys() else 0
+                wp_val = p['wp'] if 'wp' in p.keys() else 0
                 pitching_rows.append({
                     "選手名": p['player_name'], 
                     "勝": bool(p['win']), "負": bool(p['loss']), "S": bool(p['save']), 
                     "投球回": float(p['ip'] or 0.0), "球数": int(p['np'] or 0), 
-                    "打者": int(p['tbf'] or 0), "被安": int(p['h'] or 0), "被本": int(p.get('hr', 0)),
+                    "打者": int(p['tbf'] or 0), "被安": int(p['h'] or 0), "被本": int(hr_val),
                     "奪三振": int(p['so'] or 0), "四球": int(p['bb'] or 0), "死球": int(p['hbp'] or 0), 
-                    "失点": int(p['r'] or 0), "自責": int(p['er'] or 0), "暴投": int(p.get('wp', 0))
+                    "失点": int(p['r'] or 0), "自責": int(p['er'] or 0), "暴投": int(wp_val)
                 })
         
         if not pitching_rows:
@@ -288,7 +315,6 @@ def show():
         )
 
     with tab_comment:
-        st.markdown("##### 📝 試合の戦評")
         can_edit_comment = role in ["admin", "operator"]
         game_comment = st.text_area(
             "戦評・メモを入力してください", 
@@ -299,12 +325,14 @@ def show():
         )
 
     st.divider()
-    save_label = f"編集内容を上書き保存 (ID: {st.session_state.editing_game_id})" if is_edit_mode else "試合結果を新規保存"
     
-    if st.button(save_label, type="primary", use_container_width=True):
+    # --- 保存ボタン ---
+    save_label = f"編集内容を上書き保存 (ID: {st.session_state.editing_game_id})" if is_edit_mode else "試合結果を新規保存"
+
+    # ここでは、is_game_limit_reached の場合はボタン自体を非活性化
+    if st.button(save_label, type="primary", use_container_width=True, disabled=is_game_limit_reached):
         if not opponent: st.error("対戦相手を入力してください。"); return
         try:
-            # ランニングスコアを保存用形式に変換
             inning_scores_data = {
                 "my": [data_my.get(f"{i+1}回") for i in range(total_innings)], 
                 "opp": [data_opp.get(f"{i+1}回") for i in range(total_innings)]
@@ -313,7 +341,7 @@ def show():
                 "name": game_name, "opponent": opponent, "date": str(game_date), 
                 "my_team": my_team, "batting_order": batting_order, 
                 "total_my": sum_my, "total_opp": sum_opp, 
-                "handicap_my": data_my.get("ハンデ", 0), "handicap_opp": data_opp.get("ハンデ", 0), 
+                "handicap_my": safe_int(data_my.get("ハンデ")), "handicap_opp": safe_int(data_opp.get("ハンデ")), 
                 "inning_scores": json.dumps(inning_scores_data)
             }
             score_data_list = []
@@ -336,13 +364,13 @@ def show():
                         "er": int(r.get("自責", 0)), "wp": int(r.get("暴投", 0))
                     })
             
-            saved_id = db.save_scorebook_data(game_info, score_data_list, pitching_data_list, game_id=st.session_state.editing_game_id)
+            saved_id = db.save_scorebook_data(game_info, score_data_list, pitching_data_list, game_id=st.session_state.editing_game_id, club_id=club_id)
             
             if can_edit_comment:
-                db.save_game_comment(saved_id, game_comment)
+                db.save_game_comment(saved_id, game_comment, club_id=club_id)
 
             action_type = "UPDATE_GAME" if is_edit_mode else "ADD_GAME"
-            db.add_activity_log(username, action_type, f"GameID: {saved_id}, vs {opponent}")
+            db.add_activity_log(username, action_type, f"GameID: {saved_id}, vs {opponent}", club_id=club_id)
 
             st.success(f"保存完了！ (ID: {saved_id})")
             st.balloons()

@@ -24,6 +24,12 @@ def get_rank_color(rank):
     return colors.get(rank, '#8395a7')
 
 def show():
+    # --- 0. ログインチェックと club_id 取得 ---
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
     # ユーザー権限取得
     role = st.session_state.get("user_role", "guest")
     
@@ -93,25 +99,27 @@ def show():
         </style>
     """, unsafe_allow_html=True)
 
-    # --- データ取得 ---
-    all_players = db.get_all_players()
+    # --- データ取得 (club_idフィルタリング) ---
+    all_players = db.get_all_players(club_id)
     if not all_players:
-        st.info("ℹ️ 選手データがありません。「選手名鑑」から登録してください。")
+        st.info("ℹ️ SESCの選手データがありません。「選手名鑑」から登録してください。")
         return
 
     player_dict = {}
     player_names = ["(未選択)"]
-    active_player_name = st.session_state.get("active_player", "(未選択)")
+    # セッションから選択中の選手ID、または名前を取得
+    active_player_id = st.session_state.get("selected_player_id")
     default_index = 0
 
     for i, p in enumerate(all_players):
+        p_id = p[0]
         p_name = p[1]
         player_names.append(p_name)
         player_dict[p_name] = {
             "id": p[0], "name": p[1], "birth": p[2], "hometown": p[3], 
             "memo": p[4], "photo": p[5], "video_url": p[6], "team": p[8] if len(p) > 8 else "未所属"
         }
-        if p_name == active_player_name:
+        if active_player_id == p_id:
             default_index = i + 1
 
     # --- 選手選択 ---
@@ -124,8 +132,8 @@ def show():
     player_info = player_dict[selected_name]
     st.session_state.selected_player_id = player_info["id"]
 
-    # --- 統計データ取得 & 計算 ---
-    d_stats_raw = db.get_player_detailed_stats(selected_name)
+    # --- 統計データ取得 & 計算 (club_id対応) ---
+    d_stats_raw = db.get_player_detailed_stats(selected_name, club_id)
     default_stats = {"avg":0.0, "obp":0.0, "slg":0.0, "ops":0.0, "pa":0, "ab":0, "h":0, "d2":0, "d3":0, "hr":0, "rbi":0, "sb":0, "bb":0, "so":0, "sf":0, "bb_k":0.0}
     d_stats = {**default_stats, **d_stats_raw} if isinstance(d_stats_raw, dict) else default_stats
 
@@ -144,8 +152,8 @@ def show():
     denom_babip = (ab - so - hr + d_stats.get('sf', 0))
     babip = (h - hr) / denom_babip if denom_babip > 0 else 0.0
 
-    # --- 投手成績詳細集計 (不整合修正版) ---
-    p_stats_all = db.get_pitching_stats_filtered("すべて")
+    # --- 投手成績詳細集計 (club_id対応) ---
+    p_stats_all = db.get_pitching_stats_filtered("すべて", club_id)
     p_stats = next((p for p in p_stats_all if p.get('name') == selected_name), None)
     
     has_pitching = False
@@ -157,7 +165,6 @@ def show():
         p_bb = int(p_stats.get('total_bb', 0))
         p_hits = int(p_stats.get('total_h', 0))
         
-        # database.pyの集計結果(total_win等)を直接利用
         p_wins = int(p_stats.get('total_win', 0))
         p_losses = int(p_stats.get('total_loss', 0))
         p_saves = int(p_stats.get('total_save', 0))
@@ -170,10 +177,11 @@ def show():
         p_wins, p_losses, p_saves = 0, 0, 0
         p_k9, p_whip, p_k_bb = 0, 0, 0
 
-    # 特殊能力判定用の生データ解析
+    # 特殊能力判定用の生データ解析 (club_id対応)
     pull_count, center_count, oppo_count, infield_hit, bunt_sac = 0, 0, 0, 0, 0
     with sqlite3.connect('softball.db') as conn:
-        rows = conn.execute("SELECT innings FROM scorebook_batting WHERE player_name = ?", (selected_name,)).fetchall()
+        # club_id でフィルタリングして取得
+        rows = conn.execute("SELECT innings FROM scorebook_batting WHERE player_name = ? AND club_id = ?", (selected_name, club_id)).fetchall()
     
     valid_dirs = 0
     for r in rows:
@@ -246,6 +254,7 @@ def show():
         if p_bb > p_so and p_ip > 5: abilities.append(("四球", "red"))
 
     # --- UI表示 ---
+    
     with st.container():
         c_head_img, c_head_txt = st.columns([1, 4])
         with c_head_img:
@@ -346,21 +355,22 @@ def show():
             st.info("投手としての出場記録はありません。")
 
     with tab3:
-        history = db.get_player_batting_history(selected_name)
+        # 履歴取得 (club_id対応)
+        history = db.get_player_batting_history(selected_name, club_id)
         if history:
             df_hist = pd.DataFrame(history)
             df_hist['試合'] = range(1, len(df_hist)+1)
-            # グラフが表示されない(0のまま)原因は打率のリスト化ミスとy軸範囲。
-            # 最新のdf_histから打率を取得
             fig_line = px.line(df_hist, x='試合', y='打率', markers=True, title="シーズン打率推移")
             fig_line.update_traces(line_color='#e74c3c')
-            fig_line.update_yaxes(range=[0, 1.0]) # ソフトボールなら1.0を上限に固定が視認性が良い
+            fig_line.update_yaxes(range=[0, 1.0])
             st.plotly_chart(fig_line, use_container_width=True)
+        
         if player_info["video_url"]:
             st.divider()
             st.markdown("#### 🎬 プレー動画")
             st.video(player_info["video_url"])
         else:
             st.caption("動画は登録されていません")
+            
         st.divider()
         st.caption(f"監督メモ: {player_info['memo']}")

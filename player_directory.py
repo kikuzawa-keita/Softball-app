@@ -6,12 +6,23 @@ import sqlite3
 from PIL import Image
 from streamlit_cropper import st_cropper
 
-# database.py などの読み込み関数にキャッシュをかける例
+# ログイン中の club_id を考慮したキャッシュ
 @st.cache_data
-def get_all_players_cached():
-    return db.get_all_players()
+def get_all_players_cached(club_id):
+    return db.get_all_players(club_id)
 
 def show():
+    # --- 0. ログインチェックと club_id 取得 ---
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
+    # --- プラン情報の取得 ---
+    plan_info = db.get_club_plan(club_id)
+    plan_type = plan_info.get("plan_type", "free")
+    max_players = plan_info.get("max_players", 30)
+
     # --- 現在の年度を取得 (メンテナンスフリー化) ---
     current_year = datetime.date.today().year
 
@@ -25,7 +36,6 @@ def show():
     # --- 1. CSS設定 ---
     st.markdown(f"""
         <style>
-
         .retired-card {{ background-color: #f8f9fa; opacity: 0.8; border-style: dashed; }}
         
         div.stButton > button[kind="secondary"] {{
@@ -85,30 +95,36 @@ def show():
         return path
 
     # --- 3. 新規登録 (Admin/Operatorのみ) ---
+    players_raw = db.get_all_players(club_id)
+    current_player_count = len(players_raw)
+    is_limit_reached = (plan_type == "free" and current_player_count >= max_players)
+
     if role in ["admin", "operator"]:
         with st.expander("➕ 新しい選手を登録する"):
-            new_name = st.text_input("選手名（必須）")
-            all_teams = db.get_all_teams()
-            new_team = st.selectbox("所属チーム", all_teams, key="reg_team_sel")
+            if is_limit_reached:
+                st.warning(f"⚠️ 無料版の登録上限（{max_players}名）に達しています。新しい選手を登録するには、既存の選手を削除するか有料プランへのアップグレードが必要です。")
+            
+            new_name = st.text_input("選手名（必須）", disabled=is_limit_reached)
+            all_teams = db.get_all_teams(club_id)
+            new_team = st.selectbox("所属チーム", all_teams, key="reg_team_sel", disabled=is_limit_reached)
             
             c1, c2 = st.columns(2)
-            new_birth = c1.text_input("生年月日", placeholder="1995/05/20")
-            new_home = c2.text_input("出身地", placeholder="東京都")
-            new_memo = st.text_area("備考・紹介文")
+            new_birth = c1.text_input("生年月日", placeholder="1995/05/20", disabled=is_limit_reached)
+            new_home = c2.text_input("出身地", placeholder="東京都", disabled=is_limit_reached)
+            new_memo = st.text_area("備考・紹介文", disabled=is_limit_reached)
             
-            uploaded_file = st.file_uploader("写真を選択", type=['jpg', 'png', 'jpeg'], key="new_upload")
+            uploaded_file = st.file_uploader("写真を選択", type=['jpg', 'png', 'jpeg'], key="new_upload", disabled=is_limit_reached)
             cropped_img_data = None
             if uploaded_file:
                 img = Image.open(uploaded_file)
                 cropped_img_data = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=(1, 1))
                 st.image(cropped_img_data, width=150, caption="プレビュー")
 
-            if st.button("選手を新規登録する", type="primary"):
+            if st.button("選手を新規登録する", type="primary", disabled=is_limit_reached):
                 if new_name:
                     img_path = save_cropped_image(cropped_img_data, new_name) if cropped_img_data else ""
-                    # database.pyの構成に合わせて背番号なしで登録
-                    db.add_player(new_name, new_birth, new_home, new_memo, img_path, new_team)
-                    db.add_activity_log(username, "ADD_PLAYER", f"登録: {new_name}")
+                    db.add_player(club_id, new_name, new_birth, new_home, new_memo, img_path, new_team)
+                    db.add_activity_log(username, "ADD_PLAYER", f"登録: {new_name}", club_id)
                     st.success(f"{new_name} 選手を登録しました！")
                     st.rerun()
                 else:
@@ -117,9 +133,9 @@ def show():
     st.divider()
 
     # --- 4. 一覧表示と検索 ---
-    players_raw = db.get_all_players()
-    ordered_teams = db.get_all_teams() 
-    team_colors = {name: color for name, color in db.get_all_teams_with_colors()}
+    # players_raw は上記(3)で取得済み
+    ordered_teams = db.get_all_teams(club_id) 
+    team_colors = {name: color for name, color in db.get_all_teams_with_colors(club_id)}
     
     f1, f2 = st.columns([2, 1])
     search_q = f1.text_input("🔍 選手名検索")
@@ -143,11 +159,10 @@ def show():
         st.info("選手が見つかりません。")
         return
 
-    # --- グリッド表示 ---
+    # --- 5. グリッド表示 ---
     cols = st.columns(3)
     for i, p in enumerate(players_filtered):
         p_id, p_name, p_birth, p_home, p_memo, p_img = p[0], p[1], p[2], p[3], p[4], p[5]
-        # p[7]は現役フラグ(1:現役, 0:引退)
         is_active = p[7] if (len(p) > 7 and p[7] is not None) else 1
         p_team = p[8] if len(p) > 8 else "未所属"
         
@@ -168,7 +183,6 @@ def show():
                     st.write("📸 写真の変更")
                     e_uploaded = st.file_uploader("新しい写真を選択", type=['jpg', 'png', 'jpeg'], key=f"eup_{p_id}")
                     
-                    # 修正：セッション状態で新しく確定された画像パスを保持する
                     temp_img_key = f"temp_img_path_{p_id}"
                     if temp_img_key not in st.session_state:
                         st.session_state[temp_img_key] = p_img
@@ -178,17 +192,15 @@ def show():
                         e_cropped = st_cropper(e_img_obj, realtime_update=True, box_color='#FF0000', aspect_ratio=(1, 1), key=f"ecrop_{p_id}")
                         if st.button("この写真で確定", key=f"conf_img_{p_id}"):
                             new_path = save_cropped_image(e_cropped, e_name)
-                            st.session_state[temp_img_key] = new_path # 確定したパスをセッションに保存
-                            st.success("写真を一時保存しました")
+                            st.session_state[temp_img_key] = new_path
+                            st.success("写真を確定しました")
 
                     btn_c1, btn_c2 = st.columns(2)
                     if btn_c1.button("保存", key=f"sv_{p_id}", type="primary", use_container_width=True):
-                        # セッションに保存された最新の画像パス（変更なければ元のパス）を使用
                         final_img_path = st.session_state.get(temp_img_key, p_img)
-                        db.update_player_info(p_id, e_name, e_birth, e_home, e_memo, final_img_path, (1 if e_status=="現役" else 0), e_team)
-                        db.add_activity_log(username, "EDIT_PLAYER", f"更新: {e_name}")
+                        db.update_player_info(p_id, e_name, e_birth, e_home, e_memo, final_img_path, (1 if e_status=="現役" else 0), e_team, club_id)
+                        db.add_activity_log(username, "EDIT_PLAYER", f"更新: {e_name}", club_id)
                         
-                        # 後片付け
                         if temp_img_key in st.session_state:
                             del st.session_state[temp_img_key]
                         st.session_state.edit_player_id = None
@@ -200,14 +212,13 @@ def show():
                         st.session_state.edit_player_id = None
                         st.rerun()
 
-                    # --- 管理者専用：削除機能の追加 ---
                     if role == "admin":
                         st.divider()
                         with st.expander("⚠️ 危険な操作"):
                             confirm_delete = st.checkbox("この選手を完全に削除することに同意します", key=f"conf_del_cb_{p_id}")
                             if st.button(f"🗑️ {p_name} 選手を削除", key=f"del_btn_{p_id}", type="primary", disabled=not confirm_delete):
-                                db.delete_player(p_id)
-                                db.add_activity_log(username, "DELETE_PLAYER", f"削除: {p_name}")
+                                db.delete_player(p_id, club_id)
+                                db.add_activity_log(username, "DELETE_PLAYER", f"削除: {p_name}", club_id)
                                 st.session_state.edit_player_id = None
                                 st.success(f"{p_name} を削除しました。")
                                 st.rerun()
@@ -227,10 +238,10 @@ def show():
                     with name_row:
                         if st.button(p_name, key=f"btn_{p_id}", type="secondary"):
                             st.session_state.selected_player_id = p_id
-                            st.session_state.current_page = "選手個人分析" # 画面遷移名を修正
+                            st.session_state.current_page = "選手個人分析"
                             st.rerun()
                     with edit_row:
-                        if role == "admin" and st.button("📝", key=f"ed_{p_id}"):
+                        if role in ["admin", "operator"] and st.button("📝", key=f"ed_{p_id}"):
                             st.session_state.edit_player_id = p_id
                             st.rerun()
                     
@@ -239,14 +250,12 @@ def show():
                     st.markdown(f'<div>{status_badge}<span class="team-badge" style="background-color:{bg_color};">{p_team}</span></div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="font-size:0.7rem; color:#666; line-height:1.2;">🎂 {p_birth}<br>🏠 {p_home}</div>', unsafe_allow_html=True)
 
-                # 成績ヘッダーの出し分け
                 header_label = f"{current_year}年度成績" if is_active == 1 else "生涯成績"
                 st.markdown(f'<div class="stats-header">{header_label}</div>', unsafe_allow_html=True)
                 
                 try:
-                    # 現役なら現在の年度、引退ならNone（生涯成績）を渡す
                     target_year = current_year if is_active == 1 else None
-                    stats = db.get_player_season_stats(p_id, year=target_year)
+                    stats = db.get_player_season_stats(p_id, year=target_year, club_id=club_id)
                     
                     s1, s2, s3, s4 = st.columns(4)
                     s1.markdown(f"<div class='stats-label'>打率</div><div class='stats-value'>{stats.get('avg',0):.3f}</div>", unsafe_allow_html=True)

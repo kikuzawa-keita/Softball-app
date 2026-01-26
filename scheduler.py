@@ -1,10 +1,15 @@
-# scheduler.py
 import streamlit as st
 import database as db
 import pandas as pd
 from datetime import datetime, date
 
 def show():
+    # ログイン中の club_id を取得
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
     db.init_scheduler_db()
     st.title("📅 チームスケジューラー")
 
@@ -23,11 +28,11 @@ def show():
         </style>
     """, unsafe_allow_html=True)
 
-    # 共通データの取得
-    all_teams = db.get_all_teams()
-    team_colors = {name: color for name, color in db.get_all_teams_with_colors()}
-    events = db.get_all_events()
-    players_raw = db.get_all_players()
+    # 共通データの取得 (club_id を追加)
+    all_teams = db.get_all_teams(club_id)
+    team_colors = {name: color for name, color in db.get_all_teams_with_colors(club_id)}
+    events = db.get_all_events(club_id)
+    players_raw = db.get_all_players(club_id)
     today_str = date.today().isoformat()
 
     cat_icons = {
@@ -75,7 +80,7 @@ def show():
                     else:
                         team_str = ",".join(target_teams)
                         full_title = f"[{team_str}] {title}"
-                        db.save_event(str(input_date), full_title, category, location, memo)
+                        db.save_event(str(input_date), full_title, category, location, memo, club_id)
                         st.success("登録完了！")
                         st.rerun()
 
@@ -84,6 +89,7 @@ def show():
         return
 
     def parse_event(ev):
+        # ev は (event_id, date, title, category, location, memo) の形式
         raw_title = ev[2] if len(ev) > 2 else ""
         extracted_teams = []
         clean_title = raw_title
@@ -111,15 +117,14 @@ def show():
 
             for ev in upcoming_events:
                 ev_id, ev_date, _, ev_cat, ev_loc, ev_memo, ev_teams, ev_title = ev
-                current_att = db.get_attendance_for_event(ev_id)
+                current_att = db.get_attendance_for_event(ev_id, club_id)
                 
-                # --- (1) 欠席・保留も含めた集計ロジック ---
+                # --- 欠席・保留も含めた集計 ---
                 att_values = list(current_att.values())
                 count_yes = att_values.count("出席")
                 count_no = att_values.count("欠席")
                 count_hold = att_values.count("保留")
                 
-                # ポップオーバーのラベルに詳しく表示
                 pop_label = f"✅{count_yes} ❌{count_no} △{count_hold}"
                 
                 dt = datetime.strptime(ev_date, '%Y-%m-%d')
@@ -154,13 +159,8 @@ def show():
                             team_str = ",".join(new_teams)
                             updated_full_title = f"[{team_str}] {new_title}"
                             
-                            # --- (2) 出欠を消さないための修正 ---
-                            # database.pyの関数制約を考慮し、IDを維持するために update_event（もしあれば）を使いたいところですが、
-                            # なければ save_event の引数に ev_id を渡せるか、あるいは内部で更新処理をする必要があります。
-                            # 原則として database.py を変えないため、既存の save_event が ID 指定不可の場合は
-                            # ここで ID を維持する DB 処理を直接呼ぶか、database.py 側に update 系統の関数が必要です。
-                            # ※ここでは「IDが変わると出欠が消える」問題を、同一 ID で UPDATE する想定で記述します。
-                            db.save_event(str(new_date), updated_full_title, new_cat, new_loc, new_memo, event_id=ev_id)
+                            # save_event 関数を event_id 付きで呼び出し
+                            db.save_event(str(new_date), updated_full_title, new_cat, new_loc, new_memo, club_id, event_id=ev_id)
                             
                             st.session_state[edit_mode_key] = False
                             st.rerun()
@@ -197,26 +197,27 @@ def show():
                             target_members = []
                             if sel_team != "--":
                                 for p in players_raw:
+                                    # p[8] = team_name, p[7] = is_active (playersテーブルの構造に依存)
                                     p_team = str(p[8]).strip() if (len(p) > 8 and p[8] is not None) else "未所属"
                                     p_active = p[7] if (len(p) > 7 and p[7] is not None) else 1
                                     if p_team == sel_team and int(p_active) == 1:
                                         target_members.append(p[1])
                                 
-                                player_options = ["--"] + sorted(target_members)
-                                default_player_idx = 0
-                                if "active_player" in st.session_state and st.session_state.active_player in player_options:
-                                    default_player_idx = player_options.index(st.session_state.active_player)
+                            player_options = ["--"] + sorted(target_members)
+                            default_player_idx = 0
+                            if "active_player" in st.session_state and st.session_state.active_player in player_options:
+                                default_player_idx = player_options.index(st.session_state.active_player)
 
-                                my_name = st.selectbox("名前を選択", player_options, index=default_player_idx, key=f"p_sel_{ev_id}")
-                                
-                                if my_name != "--":
-                                    b1, b2, b3 = st.columns(3)
-                                    if b1.button("出", key=f"y_{ev_id}", use_container_width=True):
-                                        db.update_attendance(ev_id, my_name, "出席"); st.rerun()
-                                    if b2.button("欠", key=f"n_{ev_id}", use_container_width=True):
-                                        db.update_attendance(ev_id, my_name, "欠席"); st.rerun()
-                                    if b3.button("保", key=f"h_{ev_id}", use_container_width=True):
-                                        db.update_attendance(ev_id, my_name, "保留"); st.rerun()
+                            my_name = st.selectbox("名前を選択", player_options, index=default_player_idx, key=f"p_sel_{ev_id}")
+                            
+                            if my_name != "--":
+                                b1, b2, b3 = st.columns(3)
+                                if b1.button("出", key=f"y_{ev_id}", use_container_width=True):
+                                    db.update_attendance(ev_id, my_name, "出席", club_id); st.rerun()
+                                if b2.button("欠", key=f"n_{ev_id}", use_container_width=True):
+                                    db.update_attendance(ev_id, my_name, "欠席", club_id); st.rerun()
+                                if b3.button("保", key=f"h_{ev_id}", use_container_width=True):
+                                    db.update_attendance(ev_id, my_name, "保留", club_id); st.rerun()
                         
                         if role in ["admin", "operator"]:
                             st.divider()
@@ -225,7 +226,7 @@ def show():
                                 st.session_state[edit_mode_key] = True
                                 st.rerun()
                             if col_btn2.button("🗑️ 完全に削除する", key=f"del_{ev_id}", type="primary", use_container_width=True):
-                                db.delete_event(ev_id)
+                                db.delete_event(ev_id, club_id)
                                 st.rerun()
                 st.divider()
 
@@ -242,7 +243,7 @@ def show():
                         st.write(f"場所: {e[4]}")
                         st.write(f"チーム: {', '.join(e[6])}")
                         if st.button("この過去履歴を削除", key=f"past_del_{e[0]}", type="primary"):
-                            db.delete_event(e[0])
+                            db.delete_event(e[0], club_id)
                             st.rerun()
             else:
                 display_data = [{"日付": e[1], "チーム": ", ".join(e[6]), "予定": e[7], "場所": e[4]} for e in past_events]

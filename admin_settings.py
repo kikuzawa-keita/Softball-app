@@ -2,6 +2,12 @@ import streamlit as st
 import database as db
 
 def show():
+    # --- 0. ログインチェックと club_id 取得 ---
+    club_id = st.session_state.get("club_id")
+    if not club_id:
+        st.error("倶楽部セッションが見つかりません。ログインし直してください。")
+        return
+
     st.title("⚙️ 管理設定パネル")
     
     # 権限チェック
@@ -25,7 +31,8 @@ def show():
             
             if st.button("チームを新設する", type="primary", use_container_width=True):
                 if new_team:
-                    if db.add_team_master(new_team, new_color):
+                    # club_id を指定して追加
+                    if db.add_team_master(new_team, new_color, club_id=club_id):
                         st.success(f"チーム「{new_team}」を新設しました！")
                         st.rerun()
                     else:
@@ -33,7 +40,8 @@ def show():
 
         st.markdown("---")
         st.markdown("#### 📋 登録済みチームの管理")
-        teams_data = db.get_all_teams_with_colors()
+        # club_id に紐づくチームのみ取得
+        teams_data = db.get_all_teams_with_colors(club_id=club_id)
         
         if not teams_data:
             st.info("登録されたチームはありません。")
@@ -53,19 +61,22 @@ def show():
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("更新", key=f"upd_{name}"):
-                                db.update_team_color(name, changed_color)
+                                # club_id を指定して更新
+                                db.update_team_color(name, changed_color, club_id=club_id)
                                 st.toast(f"{name}の色を更新しました")
                                 st.rerun()
                         with c2:
                             if st.button("削除", key=f"del_{name}"):
-                                db.delete_team(name)
+                                # club_id を指定して削除
+                                db.delete_team(name, club_id=club_id)
                                 st.rerun()
 
-    # --- TAB2: ユーザー管理 (auth.pyから移行) ---
+    # --- TAB2: ユーザー管理 ---
     with tab2:
-        st.subheader("ユーザー一覧")
-        users = db.get_all_users()
-        st.dataframe(users, use_container_width=True)
+        st.subheader(f"👥 {st.session_state.get('club_name', '自倶楽部')} のユーザー一覧")
+        # club_id に紐づくユーザーのみ表示
+        users = db.get_all_users(club_id=club_id)
+        st.dataframe(users, use_container_width=True, hide_index=True)
 
         st.divider()
         st.subheader("新規ユーザー作成")
@@ -76,13 +87,13 @@ def show():
         
         if st.button("ユーザー追加", use_container_width=True):
             if new_u and new_p:
-                if db.create_user(new_u, new_p, new_r):
+                # club_id を紐づけてユーザー作成
+                if db.create_user(new_u, new_p, new_r, club_id=club_id):
                     st.success(f"ユーザー {new_u} を作成しました")
-                    # ログの記録
-                    db.add_activity_log(st.session_state.username, "CREATE_USER", f"New: {new_u} ({new_r})")
+                    db.add_activity_log(st.session_state.username, "CREATE_USER", f"New: {new_u} ({new_r})", club_id=club_id)
                     st.rerun()
                 else:
-                    st.error("ユーザー名が重複しています")
+                    st.error("ユーザー名が重複しているか、作成に失敗しました")
             else:
                 st.warning("全項目入力してください")
         
@@ -92,21 +103,28 @@ def show():
             target_list = users['username'].tolist()
             del_target = st.selectbox("削除するユーザーを選択", target_list)
             if st.button("削除実行", type="primary"):
-                if del_target == "admin":
+                # admin (自分自身やシステムの初期admin) の削除防止は db側でもガードが必要
+                if del_target == st.session_state.username:
+                    st.error("自分自身は削除できません")
+                elif del_target == "admin" and club_id == "ADMIN_CLUB": # 特権管理者の場合
                     st.error("初期管理者は削除できません")
                 else:
-                    db.delete_user(del_target)
-                    db.add_activity_log(st.session_state.username, "DELETE_USER", f"Deleted: {del_target}")
+                    db.delete_user(del_target, club_id=club_id)
+                    db.add_activity_log(st.session_state.username, "DELETE_USER", f"Deleted: {del_target}", club_id=club_id)
                     st.success(f"{del_target} を削除しました")
                     st.rerun()
         else:
             st.info("削除できるユーザーがいません")
 
-    # --- TAB3: 操作ログ (auth.pyから移行) ---
+    # --- TAB3: 操作ログ ---
     with tab3:
-        st.subheader("システム操作ログ (最新50件)")
+        st.subheader("📜 システム操作ログ (最新50件)")
         if st.button("ログを最新に更新"):
             st.rerun()
         
-        logs = db.get_activity_logs()
-        st.dataframe(logs, use_container_width=True)
+        # club_id に紐づくログのみ取得
+        logs = db.get_activity_logs(club_id=club_id)
+        if not logs.empty:
+            st.dataframe(logs, use_container_width=True, hide_index=True)
+        else:
+            st.info("操作ログはありません。")
