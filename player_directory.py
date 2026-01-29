@@ -111,6 +111,8 @@ def show():
             c1, c2 = st.columns(2)
             new_birth = c1.text_input("生年月日", placeholder="1995/05/20", disabled=is_limit_reached)
             new_home = c2.text_input("出身地", placeholder="東京都", disabled=is_limit_reached)
+            
+            new_th = st.selectbox("投打", ["右投右打", "右投左打", "右投両打", "左投右打", "左投左打", "左投両打"], disabled=is_limit_reached)
             new_memo = st.text_area("備考・紹介文", disabled=is_limit_reached)
             
             uploaded_file = st.file_uploader("写真を選択", type=['jpg', 'png', 'jpeg'], key="new_upload", disabled=is_limit_reached)
@@ -123,7 +125,7 @@ def show():
             if st.button("選手を新規登録する", type="primary", disabled=is_limit_reached):
                 if new_name:
                     img_path = save_cropped_image(cropped_img_data, new_name) if cropped_img_data else ""
-                    db.add_player(club_id, new_name, new_birth, new_home, new_memo, img_path, new_team)
+                    db.add_player(club_id, new_name, new_birth, new_home, new_memo, img_path, new_team, new_th)
                     db.add_activity_log(username, "ADD_PLAYER", f"登録: {new_name}", club_id)
                     st.success(f"{new_name} 選手を登録しました！")
                     st.rerun()
@@ -162,9 +164,11 @@ def show():
     # --- 5. グリッド表示 ---
     cols = st.columns(3)
     for i, p in enumerate(players_filtered):
+        # database.pyの戻り値想定: (id, name, birthday, home, memo, img, club_id, is_active, team_name, throws_hits)
         p_id, p_name, p_birth, p_home, p_memo, p_img = p[0], p[1], p[2], p[3], p[4], p[5]
         is_active = p[7] if (len(p) > 7 and p[7] is not None) else 1
         p_team = p[8] if len(p) > 8 else "未所属"
+        p_th = p[9] if len(p) > 9 else "未設定"
         
         with cols[i % 3]:
             if st.session_state.edit_player_id == p_id:
@@ -178,6 +182,10 @@ def show():
                     ec1, ec2 = st.columns(2)
                     e_birth = ec1.text_input("生年月日", value=p_birth, key=f"eb_{p_id}")
                     e_home = ec2.text_input("出身地", value=p_home, key=f"eh_{p_id}")
+                    
+                    th_options = ["右投右打", "右投左打", "右投両打", "左投右打", "左投左打", "左投両打"]
+                    e_th = st.selectbox("投打", th_options, index=th_options.index(p_th) if p_th in th_options else 0, key=f"eth_{p_id}")
+                    
                     e_memo = st.text_area("備考", value=p_memo, key=f"em_{p_id}")
                     
                     st.write("📸 写真の変更")
@@ -198,7 +206,7 @@ def show():
                     btn_c1, btn_c2 = st.columns(2)
                     if btn_c1.button("保存", key=f"sv_{p_id}", type="primary", use_container_width=True):
                         final_img_path = st.session_state.get(temp_img_key, p_img)
-                        db.update_player_info(p_id, e_name, e_birth, e_home, e_memo, final_img_path, (1 if e_status=="現役" else 0), e_team, club_id)
+                        db.update_player_info(p_id, e_name, e_birth, e_home, e_memo, final_img_path, (1 if e_status=="現役" else 0), e_team, club_id, e_th)
                         db.add_activity_log(username, "EDIT_PLAYER", f"更新: {e_name}", club_id)
                         
                         if temp_img_key in st.session_state:
@@ -248,7 +256,8 @@ def show():
                     bg_color = team_colors.get(p_team, "#6c757d")
                     status_badge = '<span class="status-badge active-badge">現役</span>' if is_active == 1 else '<span class="status-badge retired-label">引退</span>'
                     st.markdown(f'<div>{status_badge}<span class="team-badge" style="background-color:{bg_color};">{p_team}</span></div>', unsafe_allow_html=True)
-                    st.markdown(f'<div style="font-size:0.7rem; color:#666; line-height:1.2;">🎂 {p_birth}<br>🏠 {p_home}</div>', unsafe_allow_html=True)
+                    # 投打情報を生年月日の上に配置
+                    st.markdown(f'<div style="font-size:0.7rem; color:#666; line-height:1.2;">⚾ {p_th}<br>🎂 {p_birth}<br>🏠 {p_home}</div>', unsafe_allow_html=True)
 
                 header_label = f"{current_year}年度成績" if is_active == 1 else "生涯成績"
                 st.markdown(f'<div class="stats-header">{header_label}</div>', unsafe_allow_html=True)

@@ -1,7 +1,7 @@
 import streamlit as st
 import database as db
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 def show():
     # ログイン中の club_id を取得
@@ -10,8 +10,9 @@ def show():
         st.error("倶楽部セッションが見つかりません。ログインし直してください。")
         return
 
-    db.init_scheduler_db()
+    # db.init_scheduler_db()  # database.pyに存在しないため削除
     st.title("📅 チームスケジューラー")
+    st.warning("１年を経過した履歴は自動で削除されます。")
 
     role = st.session_state.get("user_role", "guest")
     
@@ -33,7 +34,12 @@ def show():
     team_colors = {name: color for name, color in db.get_all_teams_with_colors(club_id)}
     events = db.get_all_events(club_id)
     players_raw = db.get_all_players(club_id)
-    today_str = date.today().isoformat()
+    today = date.today()
+    today_str = today.isoformat()
+
+    # 1年以上前の予定を自動削除するロジック
+    one_year_ago_str = (today - timedelta(days=365)).isoformat()
+    old_events = [e for e in events if e[1] < one_year_ago_str]
 
     cat_icons = {
         "試合": "⚾試合", "練習": "👟練習", "送別会": "💐送別会", 
@@ -61,11 +67,11 @@ def show():
                 category = c3.selectbox("種別", list(cat_icons.keys()))
                 title = c4.text_input("予定名")
 
-                location_options = ["（新しい場所を登録する）"] + existing_locations
-                selected_loc = st.selectbox("場所を選択", location_options)
+                location_options = ["（以前使った住所から選択）"] + existing_locations
+                selected_loc = st.selectbox("場所", location_options)
                 
-                if selected_loc == "（新しい場所を登録する）":
-                    location = st.text_input("新しい場所の名前を入力")
+                if selected_loc == "（以前使った住所から選択）":
+                    location = st.text_input("新しい場所を追加する場合は、こちらに入力してください")
                 else:
                     location = selected_loc
 
@@ -174,6 +180,7 @@ def show():
                         if ev_memo: st.info(f"📝 {ev_memo}")
                         
                         st.divider()
+                        st.columns([1, 1])
                         d1, d2 = st.columns([1, 1])
                         with d1:
                             st.markdown("**回答状況**")
@@ -238,6 +245,7 @@ def show():
         else:
             if role in ["admin", "operator"]:
                 st.subheader("📁 履歴の管理")
+
                 for e in past_events:
                     with st.expander(f"{e[1]} - {e[7]}"):
                         st.write(f"場所: {e[4]}")
