@@ -3,3 +3,5 @@ pandas
 Pillow
 plotly
 streamlit-cropper
+fpdf
+reportlab
