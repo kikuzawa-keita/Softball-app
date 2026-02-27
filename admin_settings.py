@@ -3,27 +3,23 @@ import database as db
 import pandas as pd
 
 def show():
-    # --- 0. ログインチェックと club_id 取得 ---
+
     club_id = st.session_state.get("club_id")
     if not club_id:
         st.error("倶楽部セッションが見つかりません。ログインし直してください。")
         return
 
     st.title("⚙️ 管理設定パネル")
-    
-    # 権限チェック
+
     if st.session_state.get("user_role") != "admin":
         st.error("このページを表示する権限がありません。")
         return
 
-    # タブを5つに増やして「SNS・メッセージ」を統合
     tab0, tab1, tab2, tab3, tab4 = st.tabs(["🏠 倶楽部基本設定", "🌐 SNS・メッセージ", "🏃 チーム管理", "👥 ユーザー管理", "📜 操作ログ"])
 
-    # --- TAB0: 基本設定 (正式名称・ログインID・パスワード) ---
     with tab0:
         st.subheader("🏢 倶楽部基本情報・認証設定")
-        
-        # 現在の設定値をDBから取得（最新の状態を反映させるため）
+
         with db.sqlite3.connect(db.DB_NAME) as conn:
             conn.row_factory = db.sqlite3.Row
             c = conn.cursor()
@@ -89,7 +85,8 @@ def show():
                     else:
                         st.error("更新に失敗しました。ログインIDが他の倶楽部と重複している可能性があります。")
 
-    # --- TAB1: SNS・メッセージ設定 (統合・加筆) ---
+# ■タブメニュー
+
     with tab1:
         st.subheader("🌐 ホームページ・SNS設定")
         current_data = db.get_club_customization(club_id)
@@ -112,7 +109,6 @@ def show():
                 st.success("設定を更新しました！")
                 st.rerun()
 
-    # --- TAB2: チーム管理 (旧TAB1) ---
     with tab2:
         st.subheader("チーム編成・カラー管理")
         with st.container(border=True):
@@ -161,7 +157,6 @@ def show():
                                 db.delete_team(name, club_id=club_id)
                                 st.rerun()
 
-    # --- TAB3: ユーザー管理 (旧TAB2) ---
     with tab3:
         st.subheader(f"👥 {st.session_state.get('club_name', '自倶楽部')} のユーザー一覧")
         users = db.get_all_users(club_id=club_id)
@@ -207,7 +202,6 @@ def show():
         else:
             st.info("削除できるユーザーがいません")
 
-    # --- TAB4: 操作ログ (旧TAB3) ---
     with tab4:
         st.subheader("📜 システム操作ログ (最新50件)")
         if st.button("ログを最新に更新"):

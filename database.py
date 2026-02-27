@@ -9,7 +9,6 @@ from datetime import datetime
 
 DB_NAME = 'softball.db'
 
-
 # -------------—-
 # 　　 基礎 
 # --------------—
@@ -160,7 +159,6 @@ def init_db():
                 pass
 
         conn.commit()
-
 
 
 # -------------—-
@@ -345,107 +343,6 @@ def init_db():
                       is_clutch INTEGER DEFAULT 0,
                       is_unearned INTEGER DEFAULT 0)''')
         
-        conn.commit()
-
-# --- 超詳細データ保存用関数 ---
-
-def save_super_detailed_score(data):
-    """
-    超詳細版の打席結果を保存する。
-    DBファイルのカラム不足を全自動で検知・補完し、設計図と完全に同期させます。
-    """
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        
-        # 1. 設計図（CREATE TABLE）に基づいた全カラムの完全チェック
-        # (カラム名, 型定義) のリスト
-        target_schema = [
-            ("club_id", "INTEGER"),
-            ("game_id", "TEXT"),
-            ("at_bat_no", "INTEGER"),
-            ("match_date", "TEXT"),
-            ("match_month", "INTEGER"),
-            ("inning", "INTEGER"),
-            ("top_bottom", "INTEGER"),
-            ("outs", "INTEGER DEFAULT 0"),
-            ("score_diff", "INTEGER DEFAULT 0"),
-            ("batting_order", "INTEGER"),
-            ("defensive_pos", "TEXT"),
-            ("pitcher_name", "TEXT"),
-            ("p_handed", "TEXT DEFAULT 'R'"),
-            ("p_style", "TEXT DEFAULT 'Windmill'"),
-            ("batter_name", "TEXT"),
-            ("result", "TEXT"),
-            ("hit_direction", "TEXT"),
-            ("hit_trajectory", "TEXT"),
-            ("rbi", "INTEGER"),
-            ("is_clutch", "INTEGER DEFAULT 0"),
-            ("ball_counts_raw", "TEXT"),
-            ("pitch_count", "INTEGER DEFAULT 0"),
-            ("ball_counts_json", "TEXT"),
-            ("runners_json", "TEXT"),
-            ("raw_data_json", "TEXT")
-        ]
-        
-        # 現在のDBにあるカラムを把握
-        cursor = c.execute("PRAGMA table_info(super_detailed_at_bats)")
-        existing_columns = [row[1] for row in cursor.fetchall()]
-        
-        # 設計図にあってDBにないカラムをすべて追加 (ALTER TABLE)
-        for col_name, col_def in target_schema:
-            if col_name not in existing_columns:
-                try:
-                    c.execute(f"ALTER TABLE super_detailed_at_bats ADD COLUMN {col_name} {col_def}")
-                except Exception as e:
-                    print(f"Migration Log: {col_name} の追加をスキップしました ({e})")
-
-        # 2. 保存処理
-        # 月情報の抽出
-        m_date = data.get("match_date") or data.get("date") or datetime.now().strftime("%Y-%m-%d")
-        try:
-            m_month = int(m_date.split("-")[1])
-        except:
-            m_month = datetime.now().month
-
-        query = '''
-            INSERT INTO super_detailed_at_bats (
-                club_id, game_id, at_bat_no, match_date, match_month,
-                inning, top_bottom, outs, score_diff, batting_order, defensive_pos,
-                pitcher_name, p_handed, p_style, batter_name, result,
-                hit_direction, hit_trajectory, rbi, is_clutch,
-                ball_counts_raw, pitch_count, ball_counts_json, runners_json, raw_data_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        '''
-        
-        values = (
-            data.get("club_id", 1),
-            data.get("game_id"),
-            data.get("at_bat_no"),
-            m_date,
-            m_month,
-            data.get("inning"),
-            data.get("top_bottom"),
-            data.get("outs", 0),
-            data.get("score_diff", 0),
-            data.get("batting_order"),
-            data.get("defensive_pos"),
-            data.get("pitcher_name"),
-            data.get("p_handed", "R"),
-            data.get("p_style", "Windmill"),
-            data.get("batter_name"),
-            data.get("result"),
-            data.get("hit_direction"),
-            data.get("hit_trajectory"),
-            data.get("rbi", 0),
-            data.get("is_clutch", 0),
-            data.get("ball_counts_raw"),
-            data.get("pitch_count", 0),
-            json.dumps(data.get("ball_counts_list", [])),
-            json.dumps(data.get("runners_at_start", {})),
-            json.dumps(data)
-        )
-        
-        c.execute(query, values)
         conn.commit()
 
 def save_scorebook_data(game_info, score_data, pitching_data, club_id, game_id=None):
@@ -637,7 +534,6 @@ def format_image_path(raw_path):
     clean_path = raw_path.replace('\\', '/')
     return f"images/{os.path.basename(clean_path)}"
 
-# 倶楽部所属選手
 def get_all_players(club_id):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
@@ -662,7 +558,6 @@ def get_all_players(club_id):
             result.append(data)
         return result
 
-# チーム所属選手
 def get_players_by_team(team_name, club_id):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
@@ -733,6 +628,7 @@ def get_all_teams_in_order(club_id):
             
     return final_teams
 
+
 # ■■■選手名鑑に当該年度の成績を与えるロジック
 
 def get_player_season_stats(p_id, club_id, year=None):
@@ -791,9 +687,12 @@ def get_player_season_stats(p_id, club_id, year=None):
             "era": round(era, 2) # 小数点第2位まで
         }
 
+
 # -------------—-
 #  試合結果一覧 
 # --------------—
+
+# ■戦評---------
 
 def save_game_comment(game_id, comment, club_id):
     with sqlite3.connect(DB_NAME) as conn:
@@ -1015,7 +914,6 @@ def create_user(username, password, role, club_id):
         return True
     except sqlite3.IntegrityError:
         return False
-
 
 
 # -------------—-
@@ -1656,7 +1554,7 @@ def get_raw_at_bat_logs(player_name, club_id):
 
 
 # -------------—---
-# 超詳細スコア入力 
+# 　 分析スコア 
 # ----------------—
 
 # ■■■オンライン・オフライン切り替えスイッチ実装予定地
@@ -1856,3 +1754,271 @@ def get_team_names(club_id):
         return sorted(list(set(team_names)))
     
     return ["(チーム未登録：管理設定で作成してください)"]
+
+
+# -----------------------------
+#  Core.cct 同期専用ロジック
+# -----------------------------
+
+def init_core_cct_table():
+
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS core_cct_logs
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      club_id INTEGER,
+                      game_id TEXT,
+                      match_date TEXT,
+                      my_team_name TEXT,
+                      opp_team_name TEXT,
+                      handicap_my_team INTEGER DEFAULT 0,
+                      handicap_opp_team INTEGER DEFAULT 0,
+                      is_top_flag INTEGER, 
+                      is_tiebreak INTEGER DEFAULT 0,
+                      inning TEXT,
+                      batting_order INTEGER,
+                      pitcher_name TEXT,
+                      pitcher_hand TEXT, 
+                      pitching_style TEXT, 
+                      batter_name TEXT,
+                      start_score_my INTEGER,
+                      start_score_opp INTEGER,
+                      start_outs INTEGER,
+                      start_runners TEXT, 
+                      counts_history_json TEXT, 
+                      at_bat_result TEXT, 
+                      run_result TEXT, 
+                      hit_direction TEXT, 
+                      hit_type TEXT, 
+                      event_type TEXT, 
+                      sub_detail TEXT, 
+                      error_player TEXT,
+                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+        missing_columns = [
+            "pitcher_hand TEXT",
+            "pitching_style TEXT",
+            "is_tiebreak INTEGER DEFAULT 0",
+            "error_player TEXT"
+        ]
+
+        for col_def in missing_columns:
+            try:
+                col_name = col_def.split()[0]
+                c.execute(f"ALTER TABLE core_cct_logs ADD COLUMN {col_def}")
+                print(f"Added column: {col_name}")
+            except sqlite3.OperationalError:
+
+                pass
+
+        conn.commit()
+
+def save_core_cct_sync_data(club_id, sync_data_list):
+    init_core_cct_table() 
+    
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        try:
+            for data in sync_data_list:
+                counts_json = json.dumps(data.get("counts_history", []), ensure_ascii=False)                
+                c.execute('''INSERT INTO core_cct_logs 
+                              (club_id, game_id, match_date, my_team_name, opp_team_name,
+                               handicap_my_team, handicap_opp_team, is_top_flag, is_tiebreak,
+                               inning, batting_order, pitcher_name, pitcher_hand, pitching_style,
+                               batter_name, start_score_my, start_score_opp, start_outs, start_runners,
+                               counts_history_json, at_bat_result, run_result,
+                               hit_direction, hit_type, event_type, sub_detail, error_player)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (club_id, data.get("game_id"), data.get("date"), 
+                           data.get("my_team"), data.get("opp_team"),
+                           data.get("h_my", 0), data.get("h_opp", 0), 
+                           1 if data.get("is_top") else 0, 
+                           1 if data.get("is_tb") else 0,
+                           data.get("inning"), 
+                           data.get("order"), 
+                           data.get("pitcher"), 
+                           data.get("p_hand", "R"), 
+                           data.get("p_style", "Windmill"),
+                           data.get("batter"),
+                           data.get("s_my"), 
+                           data.get("s_opp"), 
+                           data.get("outs"), 
+                           str(data.get("runners")),
+                           counts_json, data.get("res"), 
+                           data.get("run_res"),
+                           data.get("h_dir"), 
+                           data.get("h_type"),
+                           data.get("type", "at_bat_result"), 
+                           data.get("sub_detail"), 
+                           data.get("error_player", "")
+                         ))
+            conn.commit()
+            return True
+        except Exception as e:
+
+            import traceback
+            print("--- Sync Error Detail ---")
+            traceback.print_exc()
+
+            print(f"Sync Error: {e}")
+            return False
+
+# ■Core.cct同期ログ削除用コード-----------
+
+def delete_game_full(game_id, club_id):
+
+    import sqlite3
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        try:
+            c.execute("DELETE FROM core_cct_logs WHERE game_id = ? AND club_id = ?", (game_id, club_id))
+            c.execute("DELETE FROM scorebook_comments WHERE game_id = ? AND club_id = ?", (game_id, club_id))
+            c.execute("DELETE FROM games WHERE id = ? AND club_id = ?", (game_id, club_id))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error in delete_game_full: {e}")
+            return False
+
+# ■同期成功時スロット削除コード-----------
+
+def delete_work_data(slot_id):
+
+    import sqlite3
+
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        try:
+            c.execute("DELETE FROM mobile_slots WHERE slot_id = ?", (slot_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting work data: {e}")
+            return False
+
+# -----------------------------
+#  　詳細スコア専用ロジック
+# -----------------------------
+
+def get_teams(club_id):
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            query = "SELECT * FROM teams WHERE club_id = ?"
+            df = pd.read_sql_query(query, conn, params=(club_id,))
+            return df
+    except Exception as e:
+        print(f"Error in get_teams: {e}")
+        return pd.DataFrame() 
+
+def get_players(club_id):
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            query = "SELECT * FROM players WHERE club_id = ?"
+            df = pd.read_sql_query(query, conn, params=(club_id,))
+            return df
+    except Exception as e:
+        print(f"Error in get_players: {e}")
+        return pd.DataFrame() 
+
+def get_nomal_score_detail(game_id):
+    with sqlite3.connect(DB_NAME) as conn:
+
+        p_query = """
+            SELECT 
+                player_name as 投手名, ip as 回, np as 球数, h as 被安, hr as 被本, 
+                so as 奪三, bb as 与四, hbp as 与死, r as 失点, er as 自責, wp as WP
+            FROM scorebook_pitching WHERE game_id = ?
+        """
+        pitching_df = pd.read_sql(p_query, conn, params=(game_id,))
+
+        b_query = "SELECT player_name, innings, summary FROM scorebook_batting WHERE game_id = ?"
+        b_raw = pd.read_sql(b_query, conn, params=(game_id,))
+        
+        batting_list = []
+        for _, row in b_raw.iterrows():
+
+            innings = json.loads(row['innings'])
+            summary = json.loads(row['summary'])
+            
+            entry = {"選手名": row['player_name']}
+            entry.update(innings) # 1~7回のデータ
+            entry.update({
+                "打点": summary.get("rbi", 0),
+                "得点": summary.get("run", 0),
+                "盗塁": summary.get("sb", 0),
+                "失策": summary.get("err", 0),
+                "打順": summary.get("order", 0)
+            })
+            batting_list.append(entry)
+            
+        batting_df = pd.DataFrame(batting_list)
+        
+    return batting_df, pitching_df
+
+def save_nomal_score_independent(club_id, game_info):
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+
+            sb = game_info['scoreboard']
+            try:
+                my_score = int(sb['計'][0])
+                opp_score = int(sb['計'][1])
+            except:
+                my_score, opp_score = 0, 0
+
+            result_str = "○" if my_score > opp_score else "●" if my_score < opp_score else "△"
+
+            c.execute('''INSERT INTO games (club_id, date, opponent, my_score, opp_score, result, is_top_flag)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                      (club_id, game_info['date'], game_info['opponent'], my_score, opp_score, result_str, game_info['is_top_flag']))
+            
+            raw_id = c.lastrowid
+            no_game_id = f"no_{raw_id}"
+
+            for p in game_info['pitching']:
+                p_name = p.get('投手名', '')
+                if not p_name: continue
+
+                c.execute('''INSERT INTO scorebook_pitching 
+                             (game_id, club_id, player_name, ip, win, loss, save, np, h, hr, bb, hbp, so, r, er, wp, date)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (no_game_id, club_id, p_name, 
+                           p.get('回数', '0'), 
+                           1 if p.get('結果')=="勝利" else 0, 
+                           1 if p.get('結果')=="敗戦" else 0, 
+                           1 if p.get('結果')=="Ｓ" else 0,
+                           p.get('球数', 0), 
+                           p.get('被安', 0), 
+                           p.get('被本', 0), 
+                           p.get('与四', 0), 
+                           p.get('与死', 0), 
+                           p.get('奪三', 0), 
+                           p.get('失点', 0), 
+                           p.get('自責', 0), 
+                           p.get('WP', 0),   
+                           game_info['date']))
+
+            for b in game_info['batting']:
+                innings_data = json.dumps({str(i): b.get(str(i), "") for i in range(1, 8)}, ensure_ascii=False)
+                summary_data = json.dumps({
+                    "rbi": int(b.get('打点', 0)), 
+                    "run": int(b.get('得点', 0)), 
+                    "sb": int(b.get('盗塁', 0)), 
+                    "err": int(b.get('失策', 0)), 
+                    "order": int(b.get('打順', 0))
+                }, ensure_ascii=False)
+
+                c.execute('''INSERT INTO scorebook_batting (game_id, club_id, player_name, innings, summary)
+                             VALUES (?, ?, ?, ?, ?)''',
+                          (no_game_id, club_id, b.get('選手名', ''), innings_data, summary_data))
+
+            conn.commit()
+            print(f"Successfully saved as {no_game_id}")
+            return no_game_id
+    except Exception as e:
+        import traceback
+        print("--- Save Error Detail ---")
+        traceback.print_exc()
+        return None
