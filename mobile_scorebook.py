@@ -1,5 +1,6 @@
 import streamlit as st
 from datetime import date
+from datetime import datetime
 import database as db
 import mobile_database as mdb
 import json
@@ -10,6 +11,7 @@ import copy
 import receipt_view
 import pdf_generator
 import re
+import database
 
 
 # ---------------—-
@@ -195,7 +197,7 @@ def record_pitch(result_type):
             c["S"] += 1
         else:
             res_name = "空三振" if result_type == "空振り" else "見三振"
-            record_play_event(event_type="pitch", value=res_name, is_out=True)
+            record_play_event(event_type="pitch", value=res_name, is_out=False)
             prepare_runner_adjustment(res_name, is_out=True)
             return
     elif result_type == "ファール":
@@ -688,7 +690,7 @@ def show_playball():
     my_team = setup.get("my_team", "自チーム")
     opp_team = setup.get("opponent", "相手")
     
-    is_batting_first = st.session_state.get("is_batting_first", True) # 自チームが先攻か
+    is_batting_first = st.session_state.get("is_batting_first", True) 
     tb = gp.get("top_bottom", "表")
     inning = gp.get("inning", 1)
 
@@ -905,7 +907,7 @@ def get_current_pitcher():
         if name != "相手投手":
             return f"{name} ({handed}/{style_short})"
         else:
-            return "相手投手入力"
+            return "相手投手"
 
 
 # ■対戦打者------------------------
@@ -946,8 +948,21 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
     gp = st.session_state.get("game_progress", {})
     is_first = st.session_state.get("is_batting_first", True)
     tb = gp.get("top_bottom", "表")
-    current_out_snapshot = st.session_state.count.get("O", 0)
-    current_score_str = f"{gp.get('score_top', 0)}-{gp.get('score_bottom', 0)}"
+
+    current_out_snapshot = get_current_outs_from_log()
+    current_score_my = gp.get('score_my', 0)
+    current_score_opp = gp.get('score_opp', 0)
+
+    fix_data = st.session_state.get("runner_fix_data")
+    if fix_data and "runners" in fix_data:
+        start_runners_list = [str(r["original_base"]) for r in fix_data["runners"]]
+        start_runners_list.sort()
+        runners_at_start_str = ",".join(start_runners_list)
+    else:
+        r_start = gp.get("runners", {})
+        start_runners_list = [str(b) for b in [1, 2, 3] if r_start.get(str(b)) or r_start.get(b)]
+        runners_at_start_str = ",".join(start_runners_list)
+
     is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
     r = gp.get("runners", {"1": None, "2": None, "3": None})
     runners = {"1": r.get("1") or r.get(1), "2": r.get("2") or r.get(2), "3": r.get("3") or r.get(3)}
@@ -1005,8 +1020,16 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
                     if curr_pos == target_pos or curr_pos.startswith(target_pos):
                         error_meta = {"error": 1, "player": latest_p.get("name")}
                         break
+
+    opp_p_info = st.session_state.get("opp_pitcher_info", {})
+    p_hand = opp_p_info.get("handed", "R") 
+    p_style = opp_p_info.get("style", "Windmill") 
+
+
     log_entry = {
         "inning": current_inn,
+        "p_hand": p_hand,    
+        "p_style": p_style,  
         "at_bat_no": current_at_bat_no,
         "top_bottom": tb,
         "is_offense": is_my_offense,
@@ -1014,6 +1037,13 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
         "player": batter_name,
         "batter_idx": c_idx,
         "result": result,
+
+        "start_outs": current_out_snapshot,
+        "start_runners": runners_at_start_str,
+        "start_score_my": current_score_my,
+        "start_score_opp": current_score_opp,
+        "is_tb": gp.get("is_tiebreak", False), 
+
         "value": result,
         "rbi": rbi,
         "scorers": list(scorers),
@@ -1272,30 +1302,46 @@ def show_runner_action():
         tb = gp.get("top_bottom", "表")
         is_first = st.session_state.get("is_batting_first", True)
         is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
+
+        opp_p_info = st.session_state.get("opp_pitcher_info", {})
+        p_hand = opp_p_info.get("handed", "R")
+        p_style = opp_p_info.get("style", "Windmill")
+
         target_idx = next((idx for idx, p_list in enumerate(st.session_state.active_game_order) 
                            if p_list and normalize_player_name(p_list[-1]["name"]) == normalize_player_name(player)), None)
 
         rbi_earned = 1 if is_score else 0
+        current_scorers = [player] if is_score else []
+
         log_entry = {
             "inning": gp.get("inning", 1),
             "top_bottom": tb,
             "is_offense": is_my_offense,
             "event_type": "runner_event",
+            "p_hand": p_hand,
+            "p_style": p_style,
             "batter_idx": target_idx,
             "player": player,           
             "player_name": player,      
             "value": f"{player}:{result_text}",
             "result": result_text,
-            "rbi": rbi_earned,          
+            "rbi": rbi_earned, 
+            "scorers": current_scorers,      
             "sb": sb,                   
             "cs": cs,                   
             "is_out": is_out,
             "pitcher": get_current_pitcher(),
+            "start_score_my": gp.get("score_my", 0),
+            "start_score_opp": gp.get("score_opp", 0),
+            "start_outs": st.session_state.count.get("O", 0),
+            "start_runners": ",".join(sorted([str(k) for k, v in runners.items() if v])),
             "meta": {
                 "rbi": rbi_earned,
                 "sb": sb,
-                "scorers": [player] if is_score else [],
-                "score_snapshot": f"{gp.get('score_top', 0)}-{gp.get('score_bottom', 0)}"
+                "p_hand": p_hand, 
+                "p_style": p_style, 
+                "scorers": current_scorers,
+                "score_snapshot": f"{gp.get('score_my', 0)}-{gp.get('score_opp', 0)}"
             }
         }
 
@@ -1442,8 +1488,8 @@ def show_change_display():
         gp["is_finished"] = True        
         gp["end_inning"] = gp.get("inning", 1)
         gp["end_is_top"] = gp.get("is_top", True)
-        my_score = st.session_state.get("score_b", 0)  # 裏（自チーム）
-        opp_score = st.session_state.get("score_t", 0) # 表（相手チーム）
+        my_score = st.session_state.get("score_b", 0)  
+        opp_score = st.session_state.get("score_t", 0) 
         if gp.get("is_top") is True and my_score > opp_score:
             gp["is_bottom_x"] = True
         else:
@@ -1888,47 +1934,8 @@ def show_score_sheet():
             st.rerun()
 
     # Core.cct
-    if st.button("🚀 Core.cctにデータを同期する", use_container_width=True, type="primary"):
-        if not history:
-            st.error("データがありません。")
-        else:
-            with st.spinner("Core.cctと同期中..."):
-                try:
-                    setup = st.session_state.get("game_setup", {})
-                    game_id = f"{setup.get('date', '0000-00-00')}_{setup.get('opponent', 'unknown')}"
-                    success_count = 0
-                    for h in history:
-                        sync_data = {
-                            "club_id": st.session_state.get("club_id", 1),
-                            "game_id": game_id,
-                            "at_bat_no": h.get("global_no"),
-                            "match_date": setup.get("date"),
-                            "inning": h.get("inning"),
-                            "top_bottom": h.get("top_bottom"),
-                            "outs": h.get("outs_at_start", 0),
-                            "score_diff": h.get("score_diff_at_start", 0),
-                            "batting_order": (h.get("batter_idx", 0) or 0) + 1,
-                            "defensive_pos": h.get("pos", "---"),
-                            "pitcher_name": setup.get("opponent_pitcher", "Unknown"),
-                            "p_handed": setup.get("p_handed", "R"),
-                            "p_style": setup.get("p_style", "Windmill"),
-                            "batter_name": h.get("player"),
-                            "result": h.get("result"),
-                            "hit_direction": h.get("direction", "---"),
-                            "hit_trajectory": h.get("trajectory", "---"),
-                            "rbi": h.get("rbi", 0),
-                            "is_clutch": 1 if h.get("is_clutch") else 0,
-                            "ball_counts_raw": "".join(h.get("ball_counts", [])),
-                            "pitch_count": len(h.get("ball_counts", [])),
-                            "ball_counts_list": h.get("ball_counts", []),
-                            "runners_at_start": h.get("runners_before", {})
-                        }
-                        db.save_super_detailed_score(sync_data)
-                        success_count += 1
-                    st.success(f"✅ 全 {success_count} 打席の同期が完了しました！")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"同期失敗: {e}")
+    if st.button("🚀 Core.cct データベースへ完全同期", use_container_width=True, type="primary"):
+        handle_core_cct_sync() 
 
     # PDF
     if st.button("📄 スコアシートをPDF出力(A4)", use_container_width=True):
@@ -2109,12 +2116,41 @@ def show_score_sheet():
             df_pitching_my = get_pitching_stats_for_pdf(target_is_offense=True)
             df_pitching_opp = get_pitching_stats_for_pdf(target_is_offense=False)
             gp = st.session_state.get("game_progress", {})
+            setup = st.session_state.get("game_setup", {})
+            history = st.session_state.get("at_bat_history", [])
+            is_first = st.session_state.get("is_batting_first", True)            
+            my_team = setup.get("my_team", "自チーム")
+            opp_team = setup.get("opp_team", "相手チーム")
+            my_hc = int(setup.get("my_handicap", 0) or 0)
+            opp_hc = int(setup.get("opp_handicap", 0) or 0)
+
+            top_scores_list = [""] * 7
+            bottom_scores_list = [""] * 7
+
+            for inn in range(1, 8):
+                top_acts = [h for h in history if int(h.get("inning", 0)) == inn and h.get("top_bottom") == "表"]
+                if top_acts:
+                    top_scores_list[inn-1] = str(sum(len(h.get("scorers", [])) for h in top_acts))
+
+                btm_acts = [h for h in history if int(h.get("inning", 0)) == inn and h.get("top_bottom") == "裏"]
+                if btm_acts:
+                    bottom_scores_list[inn-1] = str(sum(len(h.get("scorers", [])) for h in btm_acts))
+
+            if is_first:
+                f_name, s_name = my_team, opp_team
+                f_hc, s_hc = my_hc, opp_hc
+            else:
+                f_name, s_name = opp_team, my_team
+                f_hc, s_hc = opp_hc, my_hc
+
             game_info = {
-                "date": "2026/01/28",
-                "my_team": "８T",
-                "opp_team": "FORWARD",
-                "top_scores": ["6", "0", "0", "6", "0", "", ""],
-                "bottom_scores": ["2", "2", "0", "2", "0", "", ""]
+                "date": setup.get("date", "2026/--/--"),
+                "first_team_name": f_name,
+                "second_team_name": s_name,
+                "first_handicap": f_hc,
+                "second_handicap": s_hc,
+                "top_scores": top_scores_list,    
+                "bottom_scores": bottom_scores_list 
             }
 
             pdf_data = pdf_generator.generate_score_pdf(
@@ -2173,6 +2209,103 @@ def show_receipt_view():
 
     import receipt_view
     receipt_view.show_receipt_screen(hist, game_info)
+
+
+# ---------------—-
+# 　　Core.cct 
+# ----------------—
+
+def handle_core_cct_sync():
+
+    if "at_bat_history" not in st.session_state or not st.session_state.at_bat_history:
+        st.warning("同期するデータがありません。")
+        return
+
+    gp = st.session_state.game_progress
+    setup = st.session_state.get("game_setup", {})
+    is_first = st.session_state.get("is_batting_first", True)
+    club_id = setup.get("club_id") or st.session_state.get("club_id", 1)
+    sync_top_bottom_flag = 0 if is_first else 1
+    raw_date_str = setup.get("date")
+
+    if raw_date_str:
+        date_full = raw_date_str 
+        date_str = raw_date_str.replace("-", "") 
+    else:
+        date_full = datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.now().strftime("%Y%m%d")
+    
+    my_t = setup.get("my_team", "MyTeam").replace(" ", "")
+    opp_t = setup.get("opponent", "Opponent").replace(" ", "")
+    t_stamp = datetime.now().strftime("%H%M%S")
+
+    current_game_id = st.session_state.get("game_id", "temp_id")
+    if current_game_id == "temp_id":
+        current_game_id = f"{date_str}_{my_t}_{opp_t}_{t_stamp}"
+        st.session_state.game_id = current_game_id 
+
+    sync_list = []
+    history = st.session_state.get("at_bat_history", [])
+
+    for h in st.session_state.at_bat_history:
+        meta = h.get("meta", {})
+        error_player_name = meta.get("player", "")
+
+        entry = {
+            "game_id": current_game_id, 
+            "date": date_full, 
+            "my_team": setup.get("my_team", "自チーム"),
+            "opp_team": setup.get("opponent", "相手チーム"),
+            "h_my": gp.get("handicap_top" if is_first else "handicap_btm", 0),
+            "h_opp": gp.get("handicap_btm" if is_first else "handicap_top", 0),
+            "is_top": sync_top_bottom_flag,
+            "is_tb": h.get("is_tb", False),             
+            "inning": f"{h.get('inning')}回{h.get('top_bottom')}",
+            "order": (h.get("batter_idx", 0) + 1) if h.get("batter_idx") is not None else 0,
+            "pitcher": h.get("pitcher", "不明"), 
+            "p_hand": h.get("p_hand", "R"),
+            "p_style": h.get("p_style", "Windmill"),
+            "batter": h.get("player", "不明"),            
+            "s_my": h.get("start_score_my", 0),    
+            "s_opp": h.get("start_score_opp", 0),  
+            "outs": h.get("start_outs", 0),        
+            "runners": h.get("start_runners", ""),             
+            "counts_history": h.get("counts_history", []),
+            "res": h.get("result", ""),
+            "run_res": ", ".join(h.get("scorers", [])),
+            "h_dir": h.get("result", "")[0] if h.get("result") else "",
+            "h_type": h.get("result", "")[1:] if h.get("result") else "",
+            "type": h.get("event_type", "at_batresult"),
+            "sub_detail": str(h.get("meta", {})), 
+            "error_player": error_player_name
+        }
+        sync_list.append(entry)
+
+    success = db.save_core_cct_sync_data(club_id, sync_list)
+
+    if success:
+        st.success(f"✅ Core.cct への同期が完了しました (ID: {current_game_id})")
+
+        target_slot = st.session_state.get("current_game_id") or st.session_state.get("selected_slot")
+        if target_slot:
+            db.delete_work_data(target_slot)
+
+        st.session_state.game_id = "temp_id"
+        st.session_state.at_bat_history = []
+        st.session_state.game_progress = {
+            "top_score": 0, "btm_score": 0,
+            "inning": 1, "is_top": True,
+            "outs": 0, "runners": {1: None, 2: None, 3: None}
+        }
+        st.session_state.mobile_page = "top"
+
+        if "selected_slot" in st.session_state:
+            del st.session_state["selected_slot"]
+
+        st.rerun()
+    else:
+        st.error("❌ 同期に失敗しました。")
+
 
 
 
@@ -2246,7 +2379,7 @@ def show_mobile_ui():
             "runner_fix": show_runner_fix, "change_display": show_change_display,
             "defense_sub": show_defense_sub, "pinch_hitter": show_pinch_hitter,
             "opp_pitcher_edit": show_opp_pitcher_edit, "sub_runner": show_sub_runner,
-            "receipt": show_receipt_page  # 旧名称から 'receipt' に統一し、外部連携関数へ
+            "receipt": show_receipt_page  
         }
         
         if p in pages:

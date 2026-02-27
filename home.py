@@ -1,16 +1,14 @@
 import streamlit as st
 import database as db
-import streamlit.components.v1 as components  # コンポーネント機能を追加
+import streamlit.components.v1 as components  
 from datetime import datetime
 
 def show():
-    # --- Club ID 取得 ---
+
     club_id = st.session_state.club_id
 
-    # --- 1. 管理者設定によるカスタマイズ情報の取得 ---
     custom_data = db.get_club_customization(club_id)
 
-    # --- 表示名の動的決定 ---
     if "active_player" in st.session_state and st.session_state.active_player != "(未選択)":
         selected_player = st.session_state.active_player
         display_name = selected_player
@@ -18,7 +16,6 @@ def show():
         selected_player = "(未選択)"
         display_name = st.session_state.username
 
-    # --- デザイン設定 ---
     st.markdown("""
         <style>
         .team-tag-home {
@@ -37,25 +34,19 @@ def show():
         </style>
     """, unsafe_allow_html=True)
 
-    # --- 2. 挨拶とメインコンテンツ ---
-    
     col_main, col_side = st.columns([2, 1])
     
     with col_main:
         st.markdown(f"### {custom_data['welcome_message']}")
-        
-        # メンバーへのお知らせ
+
         if custom_data['member_announcement'] and custom_data['member_announcement'] != "（メンバーへのお知らせはまだありません）":
             with st.container(border=True):
                 st.markdown("##### 📢 倶楽部からのお知らせ")
                 st.info(custom_data['member_announcement'])
 
     with col_side:
-        # Instagramセクション
         if custom_data.get('instagram_url'):
             st.markdown("##### 📸 Official Instagram")
-            
-            # 埋め込みが拒否される場合の代替案：リッチなバナー風ボタン
             st.markdown(
                 f"""
                 <a href="{custom_data['instagram_url']}" target="_blank" style="text-decoration: none;">
@@ -68,10 +59,8 @@ def show():
                 unsafe_allow_html=True
             )
 
-    # チームカラー設定の取得
     team_colors = {name: color for name, color in db.get_all_teams_with_colors(club_id)}
 
-    # --- 直近のスケジュール表示 ---
     st.subheader("📅 直近のスケジュール")
     
     all_events = db.get_all_events(club_id)

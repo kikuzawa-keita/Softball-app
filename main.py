@@ -3,14 +3,15 @@ import auth
 import database as db
 import datetime
 import pandas as pd
+import sqlite3
 
-# ページ設定
 st.set_page_config(page_title="Softball Scorebook SaaS", layout="wide")
 
-# DB初期化
 db.init_db()
 
-# --- 1. 認証チェック ---
+
+# ■認証-----------------
+
 if "club_id" not in st.session_state and not st.session_state.get("is_master_admin", False):
     st.image("Core.cct_LOGO.png", width=300)
     tab_login, tab_register, tab_master = st.tabs(["ユーザーログイン", "新規倶楽部登録", "🌐Master Access"])
@@ -24,22 +25,23 @@ if "club_id" not in st.session_state and not st.session_state.get("is_master_adm
                 st.rerun()
     st.stop()
 
-# --- 2. マスター管理画面 ---
+
+# ■管理-----------------
+
 if st.session_state.get("is_master_admin", False):
     st.sidebar.title("Master Menu")
     if st.sidebar.button("Exit Master Mode"):
         st.session_state.is_master_admin = False
         st.rerun()
-    # (中略: マスター画面ロジック)
     st.stop()
 
-# --- 3. アプリ本体ステート初期化 ---
+
+# ■閲覧-----------------
 
 if "user_role" not in st.session_state: st.session_state.user_role = "guest"
-if "username" not in st.session_state: st.session_state.username = "Guest" # 👈 これを追加
+if "username" not in st.session_state: st.session_state.username = "Guest" 
 if "is_viewer_mode" not in st.session_state: st.session_state.is_viewer_mode = False
-if "club_name" not in st.session_state: st.session_state.club_name = "Unknown Club" # 👈 これも念のた
-
+if "club_name" not in st.session_state: st.session_state.club_name = "Unknown Club" 
 if not st.session_state.is_viewer_mode:
     auth.login_sidebar()
 else:
@@ -52,30 +54,43 @@ club_id = st.session_state.get("club_id")
 plan_info = db.get_club_plan(club_id)
 plan_type = plan_info.get('plan_type', 'free')
 
-# --- 4. メニュー定義 ---
-if st.session_state.is_viewer_mode:
+
+# ■menu-----------------
+
+if st.session_state.get("is_viewer_mode", False):
     pages = {"ホーム": "home", "選手名鑑": "directory", "試合結果一覧": "history"}
 else:
-    pages = {"ホーム": "home", "スケジュール": "scheduler", "選手名鑑": "directory", "選手個人分析": "profile", "成績ランキング": "stats", "試合結果一覧": "history"}
+    pages = {
+        "ホーム": "home", 
+        "スケジュール": "scheduler", 
+        "選手名鑑": "directory", 
+        "選手個人分析": "profile", 
+        "成績ランキング": "stats", 
+        "試合結果一覧": "history"
+    }
+    
     if role in ["admin", "operator"]:
-        pages["スコア入力"] = "scorebook"
+        pages["簡易スコア入力"] = "scorebook"
+        pages["詳細スコア入力"] = "nomal_scorebook"        
         if plan_type == "premium":
-            pages["超詳細スコア入力"] = "mobile_scorebook"
+            pages["分析スコア入力"] = "mobile_scorebook"            
     if role == "admin":
         pages["⚙️ 管理設定 (Admin)"] = "settings"
 
 page_list = list(pages.keys())
 
-# --- 💡【重要】メニュー選択の強力な固定ロジック ---
-# key="main_nav" を使うことで、st.session_state.main_nav と radio が直結します
+
+# ■ボタン-----------------
+
 if "main_nav" not in st.session_state:
     st.session_state.main_nav = page_list[0]
 
 st.sidebar.title("メニュー")
-# セッション変数 'main_nav' と radio ボタンを同期
 selection = st.sidebar.radio("Go to", page_list, key="main_nav")
 
-# 管理者専用：DB管理
+
+# ■DB管理-----------------
+
 if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
     st.sidebar.divider()
     try:
@@ -84,15 +99,34 @@ if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
     except FileNotFoundError:
         st.sidebar.error("DBファイルが見つかりません")
 
-# --- 5. ページルーティング ---
+
+
+# ■デバッグ-----------------
+
+def check_sync_data():
+
+    with sqlite3.connect("softball.db") as conn: 
+        try:
+            df = pd.read_sql("SELECT * FROM core_cct_logs ORDER BY id DESC LIMIT 5", conn)
+            if df.empty:
+                st.warning("同期成功のメッセージは出ましたが、テーブルの中身は空のようです。")
+            else:
+                st.write("最新の同期データ（5件）:", df)
+        except Exception as e:
+            st.error(f"テーブル読み込みエラー: {e}")
+            st.info("まだ一度も同期に成功していないか、テーブルが作成されていない可能性があります。")
+
+
+# ---------------------
+# 　　ルーティング
+# ---------------------
+
 page_key = pages[selection]
 
-# モバイルスコアブック以外では共通のヘッダーを表示
 if page_key != "mobile_scorebook":
     st.markdown(f"### {st.session_state.get('club_name')} / ようこそ")
     st.divider()
 
-# 各ページモジュールの呼び出し
 if page_key == "home":
     import home; home.show()
 elif page_key == "scheduler":
@@ -107,26 +141,28 @@ elif page_key == "history":
     import game_history; game_history.show()
 elif page_key == "scorebook":
     import scorebook; scorebook.show()
+elif page_key == "nomal_scorebook":
+    import nomal_scorebook; nomal_scorebook.show()
 elif page_key == "mobile_scorebook":
-    # --- 超詳細スコア入力（モバイルモード）の制御 ---
+
+
+# ■分析スコア入力（モバイルモード）の制御 ---
     
-    # 1. オンラインモード（main.py経由）であることを明示
     st.session_state.is_standalone_mobile = False
-    
-    # 2. 認証状態の強制同期
-    # main.pyでログイン済みであれば、mobile_scorebook側のガードをパスさせる
+
     if "club_id" in st.session_state:
         st.session_state.authenticated = True
-    
-    # 3. モジュールのインポートと初期化
+
     import mobile_scorebook
-    
-    # 詳細入力用のセッション初期化関数があれば実行
+
     if hasattr(mobile_scorebook, "init_session_for_detailed_input"):
         mobile_scorebook.init_session_for_detailed_input()
-    
-    # 4. 明示的なUI関数呼び出し（これによりロゴで止まる不具合を回避）
+
     mobile_scorebook.show_mobile_ui()
 
 elif page_key == "settings":
     import admin_settings; admin_settings.show()
+
+
+
+# 20260226 Ver.1.0

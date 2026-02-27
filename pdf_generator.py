@@ -38,16 +38,17 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
             return sum([int(x) for x in scores if str(x).isdigit()])
 
 
-    # ■スコアボード-------------
+# ■スコアボード-------------
 
     def draw_scoreboard(y_pos):
         header = ["チーム", "HC", "1", "2", "3", "4", "5", "6", "7", "R"]
 
         gp = st.session_state.get("game_progress", {})
 
-        setup = st.session_state.get("game_setup", {})
-        my_hc = int(setup.get("my_handicap", 0) or 0)
-        opp_hc = int(setup.get("opp_handicap", 0) or 0)
+        f_team = game_info.get('first_team_name', '先攻')
+        s_team = game_info.get('second_team_name', '後攻')
+        f_hc = game_info.get('first_handicap', 0)
+        s_hc = game_info.get('second_handicap', 0)
 
         is_finished = gp.get("is_finished", False)
         end_inn = gp.get("end_inning", 1)
@@ -70,53 +71,38 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
                         if is_top_row:
                             res.append(str(val) if val != "" else "0")
                         else: 
-                            if is_bottom_x:
-                                res.append("×")
-                            elif val != "":  
-                                res.append(str(val))
-                            elif not end_is_top:
-                                res.append("0")
-                            else:
-                                res.append("")
+                            if is_bottom_x: res.append("×")
+                            elif val != "": res.append(str(val))
+                            elif not end_is_top: res.append("0")
+                            else: res.append("")
                     else:
                         res.append("")
                 else:
-
                     curr_inn = gp.get("inning", 1)
+                    curr_is_top = gp.get("is_top", True) 
+                    
                     if target_inn < curr_inn:
                         res.append(str(val) if val != "" else "0")
                     elif target_inn == curr_inn:
                         if is_top_row:
                             res.append(str(val) if val != "" else "0")
                         else:
-                            if val != "":
-                                res.append(str(val))
-                            elif not gp.get("is_top"):
-                                res.append("0")
+                            if not curr_is_top:
+                                res.append(str(val) if val != "" else "0")
                             else:
                                 res.append("")
                     else:
                         res.append("")
             return res
 
-        top_scores = get_formatted_scores(game_info.get('top_scores', []), True)
-        bot_scores = get_formatted_scores(game_info.get('bottom_scores', []), False)
+        top_scores_formatted = get_formatted_scores(game_info.get('top_scores', []), True)
+        bot_scores_formatted = get_formatted_scores(game_info.get('bottom_scores', []), False)
 
-        total_top = safe_int_sum(game_info.get('top_scores', [])) + opp_hc
-        total_bot = safe_int_sum(game_info.get('bottom_scores', [])) + my_hc
+        total_top = safe_int_sum(game_info.get('top_scores', [])) + f_hc
+        total_bot = safe_int_sum(game_info.get('bottom_scores', [])) + s_hc
 
-        top_row = [
-            game_info['opp_team'][:10], 
-            str(opp_hc) if opp_hc > 0 else "", 
-            *top_scores, 
-            total_top
-        ]
-        bot_row = [
-            game_info['my_team'][:10], 
-            str(my_hc) if my_hc > 0 else "", 
-            *bot_scores, 
-            total_bot
-        ]
+        top_row = [f_team[:10], str(f_hc) if f_hc > 0 else "", *top_scores_formatted, total_top]
+        bot_row = [s_team[:10], str(s_hc) if s_hc > 0 else "", *bot_scores_formatted, total_bot]
         
         data = [header, top_row, bot_row]
 
@@ -135,7 +121,7 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
         return y_pos - 60
 
 
-    # ■打者成績-------------
+# ■打者成績-------------
 
     def draw_player_table(df, y_pos):    
         if df is None or df.empty:
@@ -257,7 +243,7 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
         return y_pos - table_height - 30
 
 
-    # ■投手成績-------------
+# ■投手成績-------------
 
     def draw_pitching_table(df, y_pos, title):
         if df is None or df.empty:
@@ -305,7 +291,7 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
         return y_pos - table_height - 30
 
 
-    # ■footer-------------
+# ■footer-------------
 
     def draw_footer():
         c.setFont(font_name, 8)
@@ -317,11 +303,11 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
     curr_y = draw_scoreboard(height - 105)
     
     c.setFont(font_name, 11)
-    c.drawString(50, curr_y, f"▼ {game_info['my_team']} 攻撃成績")
+    c.drawString(50, curr_y, f"▼ {game_info['first_team_name']} 攻撃成績")
     curr_y = draw_player_table(df_my, curr_y - 10)
 
     if df_pitching_my is not None:
-        curr_y = draw_pitching_table(df_pitching_my, curr_y, f"{game_info['my_team']} 投手成績")
+        curr_y = draw_pitching_table(df_pitching_my, curr_y, f"{game_info['first_team_name']} 投手成績")
     
     draw_footer()
     c.showPage()
@@ -331,11 +317,11 @@ def generate_score_pdf(game_info, df_my, df_opp, df_pitching_my=None, df_pitchin
     curr_y = draw_scoreboard(height - 105)
     
     c.setFont(font_name, 11)
-    c.drawString(50, curr_y, f"▼ {game_info['opp_team']} 攻撃成績")
+    c.drawString(50, curr_y, f"▼ {game_info['second_team_name']} 攻撃成績")
     curr_y = draw_player_table(df_opp, curr_y - 10)
 
     if df_pitching_opp is not None:
-        curr_y = draw_pitching_table(df_pitching_opp, curr_y, f"{game_info['opp_team']} 投手成績")
+        curr_y = draw_pitching_table(df_pitching_opp, curr_y, f"{game_info['second_team_name']} 投手成績")
         
     draw_footer()
     c.showPage()
