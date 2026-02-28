@@ -31,7 +31,7 @@ def normalize_player_name(n):
 def set_main_nav_fixed():
     try:
         if "main_nav" not in st.session_state:
-            st.session_state.main_nav = "超詳細スコア入力"
+            st.session_state.main_nav = "分析スコア入力"
     except Exception:
         pass
 
@@ -358,7 +358,9 @@ def show_top_menu():
         st.session_state.mobile_initial_synced = True
         st.rerun()
     st.subheader("📝 記録スロット")    
-    team_colors = db.get_team_colors(club_id)    
+    team_colors = db.get_team_colors(club_id) 
+    user_role = st.session_state.get('user_role', 'guest')
+   
     for i in range(1, 21):
         row = db.load_mobile_slot(club_id, i)        
         c_num, c_badge, c_main, c_del = st.columns([0.6, 2.5, 6, 1.2])        
@@ -404,13 +406,17 @@ def show_top_menu():
                     st.session_state.mobile_page = "order"
                 
                 st.rerun()
-            
-            if c_del.button("❌", key=f"slot_del_{i}", help="スロットを削除"):
-                if db.delete_game_slot(i):
-                    st.toast(f"スロット {i} をクリアしました")
-                    st.rerun()
-                else:
-                    st.error("削除に失敗しました。")
+
+            if user_role == "admin":
+                if c_del.button("❌", key=f"slot_del_{i}", help="スロットを削除"):
+                    if db.delete_game_slot(i):
+                        st.toast(f"スロット {i} をクリアしました")
+                        st.rerun()
+                    else:
+                        st.error("削除に失敗しました。")
+            else:
+                c_del.write("")
+
         else:
             c_badge.markdown("<div style='text-align:center; color:#555; padding-top:8px;'>----</div>", unsafe_allow_html=True)
             if c_main.button(f"＋ 新規作成", key=f"slot_new_{i}", use_container_width=True):

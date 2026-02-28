@@ -236,11 +236,13 @@ def show():
                         
                         confirm = st.checkbox("この試合の全データ削除を承認します", key=f"del_chk_normal_{g_id}")
                         if st.button("🗑️ この試合を完全に削除", key=f"del_btn_normal_{g_id}", disabled=not confirm, type="primary"):
-                            if db.delete_game_full(g_id, club_id):
+                            target_id = g_id.replace("no_", "") if g_id.startswith("no_") else g_id
+                            
+                            if db.delete_game_full(target_id, club_id):
                                 st.success(f"試合 {g_id} を削除しました。")
                                 st.rerun()
                             else:
-                                st.error("削除処理に失敗しました。")
+                                st.error("削除処理に失敗しました。データベースの接続を確認してください。")
 
 # ===== 分析版 =====
 

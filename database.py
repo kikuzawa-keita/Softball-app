@@ -920,160 +920,15 @@ def create_user(username, password, role, club_id):
 #  　成績一覧 
 # --------------—
 
-def get_player_detailed_stats(player_name, club_id, year=None):
+import json
+import sqlite3
 
-    import json
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-
-        # 基本および高度スタッツ保持用
-        s = {
-            "g": 0, "pa": 0, "ab": 0, "h": 0, "h1": 0, "h2": 0, "h3": 0, "hr": 0,
-            "bb": 0, "hbp": 0, "sh": 0, "sf": 0, "so": 0, "rbi": 0, "sb": 0, 
-            "run": 0, "err": 0, "dp": 0,
-            "scoring_pos_pa": 0, "scoring_pos_h": 0, "scoring_pos_ab": 0,
-            "vs_left_pa": 0, "vs_left_h": 0, "vs_left_ab": 0,
-            "vs_right_pa": 0, "vs_right_h": 0, "vs_right_ab": 0,
-            "out_0_h": 0, "out_1_h": 0, "out_2_h": 0,
-            # --- ここから新設指標用 ---
-            "two_strike_h": 0,       # 2ストライク後の安打数
-            "first_pitch_swing": 0,  # 初球を振った回数
-            "first_pitch_sw_h": 0,   # 初球スイングでの安打数
-            "total_pitches": 0,      # 合計被球数 (P/PA用)
-            "swinging_strikes": 0,   # 空振り合計
-            "first_pitch_strike": 0  # 初球ストライク（投手評価/打者被評価）
-        }
-
-        # --- 1. scorebook_batting (既存JSONデータ) の基礎集計 ---
-        c.execute("SELECT game_id, innings, summary FROM scorebook_batting WHERE player_name = ? AND club_id = ?", (player_name, club_id))
-        rows = c.fetchall()
-        
-        aggregated_game_ids = set()
-
-        for row in rows:
-            if not row["summary"]: continue
-            sums = json.loads(row["summary"])
-            
-            # 年度フィルタ
-            match_date = str(sums.get('date', ''))
-            if year and not match_date.startswith(str(year)):
-                continue
-            
-            g_id = str(row["game_id"])
-            aggregated_game_ids.add(g_id)
-
-            s["g"] += 1
-            s["rbi"] += int(sums.get("rbi", 0))
-            s["sb"] += int(sums.get("sb", 0))
-            s["run"] += int(sums.get("run", 0))
-            s["err"] += int(sums.get("err", 0))
-            
-            if row["innings"]:
-                inns = json.loads(row["innings"])
-                for i in inns:
-                    res = i.get("res", "")
-                    if not res or res == "---": continue
-                    
-                    s["pa"] += 1
-                    is_pa_for_ab = not any(k in res for k in ["四", "死", "犠飛", "犠"])
-                    if is_pa_for_ab: s["ab"] += 1
-
-                    is_hit = any(h in res for h in ["安", "2", "3", "本"])
-                    if is_hit:
-                        s["h"] += 1
-                        if "2" in res: s["h2"] += 1
-                        elif "3" in res: s["h3"] += 1
-                        elif "本" in res: s["hr"] += 1
-                        else: s["h1"] += 1
-                    
-                    if "四" in res: s["bb"] += 1
-                    elif "死" in res: s["hbp"] += 1
-                    elif "犠飛" in res: s["sf"] += 1
-                    elif "犠" in res: s["sh"] += 1
-                    if any(k in res for k in ["三振", "見逃"]): s["so"] += 1
-                    if "併" in res: s["dp"] += 1
-
-                    # 条件別 (得点圏、アウトカウント、左右)
-                    runners = i.get("runners", "none")
-                    if any(r in runners for r in ["2b", "3b"]):
-                        s["scoring_pos_pa"] += 1
-                        if is_pa_for_ab: s["scoring_pos_ab"] += 1
-                        if is_hit: s["scoring_pos_h"] += 1
-                    
-                    outs = str(i.get("outs", "0"))
-                    if is_hit:
-                        if outs == "0": s["out_0_h"] += 1
-                        elif outs == "1": s["out_1_h"] += 1
-                        elif outs == "2": s["out_2_h"] += 1
-
-                    p_hand = i.get("p_hand", "R")
-                    side = "vs_left" if p_hand == "L" else "vs_right"
-                    s[f"{side}_pa"] += 1
-                    if is_pa_for_ab: s[f"{side}_ab"] += 1
-                    if is_hit: s[f"{side}_h"] += 1
-
-        # --- 2. super_detailed_at_bats (超詳細レコード) からの高度指標抽出 ---
-        # 簡易版で集計した試合の「詳細項目」のみを抜き出し、sを補強する
-        query = "SELECT * FROM super_detailed_at_bats WHERE batter_name = ? AND club_id = ?"
-        if year:
-            query += f" AND match_date LIKE '{year}%'"
-        
-        c.execute(query, (player_name, club_id))
-        detail_rows = c.fetchall()
-        
-        for dr in detail_rows:
-            # 2ストライク安打
-            if dr["two_strike_hit"]: s["two_strike_h"] += 1
-            # 初球スイング
-            if dr["first_pitch_swing"]:
-                s["first_pitch_swing"] += 1
-                if any(h in (dr["result"] or "") for h in ["安", "2", "3", "本"]):
-                    s["first_pitch_sw_h"] += 1
-            # 空振り
-            s["swinging_strikes"] += (dr["swinging_strikes"] or 0)
-            # 初球ストライク
-            if dr["first_strike"] == "S": s["first_pitch_strike"] += 1
-            # 球数 (P/PA用)
-            s["total_pitches"] += (dr["pitch_count"] or 0)
-
-        # --- 3. セイバーメトリクス指標の算出 ---
-        pa = s["pa"]
-        ab = s["ab"]
-        
-        avg = s["h"] / ab if ab > 0 else 0.0
-        obp_denom = (ab + s["bb"] + s["hbp"] + s["sf"])
-        obp = (s["h"] + s["bb"] + s["hbp"]) / obp_denom if obp_denom > 0 else 0.0
-        tb = (s["h1"] + s["h2"]*2 + s["h3"]*3 + s["hr"]*4)
-        slg = tb / ab if ab > 0 else 0.0
-        
-        # P/PA (1打席あたりの被球数：粘り強さの指標)
-        ppa = s["total_pitches"] / pa if pa > 0 else 0.0
-        # 初球スイング率
-        fps_rate = s["first_pitch_swing"] / pa if pa > 0 else 0.0
-
-        result = {
-            **s,
-            "avg": avg, "obp": obp, "slg": slg, "ops": obp + slg,
-            "ppa": round(ppa, 2),
-            "first_pitch_swing_rate": round(fps_rate, 3),
-            "scoring_pos_avg": s["scoring_pos_h"] / s["scoring_pos_ab"] if s["scoring_pos_ab"] > 0 else 0.0,
-            "vs_left_avg": s["vs_left_h"] / s["vs_left_ab"] if s["vs_left_ab"] > 0 else 0.0,
-            "vs_right_avg": s["vs_right_avg_h"] / s["vs_right_ab"] if s["vs_right_ab"] > 0 else 0.0  # 既存バグ修正(vs_right_h)
-        }
-        # タイポ修正対応
-        result["vs_right_avg"] = s["vs_right_h"] / s["vs_right_ab"] if s["vs_right_ab"] > 0 else 0.0
-        
-        return result
-
-# ■■■精密一覧のためのコード
-
+# ■■■精密一覧のためのコード（打者一覧）
 def get_batting_stats_filtered(club_id):
-    
-    # 取得カラムに新設した詳細フラグを追加
+    # final_result を SELECT から除外
     query = """
         SELECT batter_name, result, rbi, raw_data_json, game_id, at_bat_no, pitch_count,
-               two_strike_hit, first_pitch_swing, final_result
+               two_strike_hit, first_pitch_swing
         FROM super_detailed_at_bats 
         WHERE club_id = ?
         ORDER BY game_id, at_bat_no, pitch_count DESC
@@ -1090,12 +945,13 @@ def get_batting_stats_filtered(club_id):
     player_games = {} # 出場試合数計算用
 
     for row in rows:
-        name = row['batter_name']
+        row_dict = dict(row) # 安全にディクショナリ化
+        name = row_dict['batter_name']
         if not name or "相手打者" in name: continue
 
-        game_id = row['game_id']
-        ab_no = row['at_bat_no']
-        raw = json.loads(row['raw_data_json'])
+        game_id = row_dict['game_id']
+        ab_no = row_dict['at_bat_no']
+        raw = json.loads(row_dict['raw_data_json']) if row_dict['raw_data_json'] else {}
         is_legacy = raw.get("source") == "legacy_migration"
         
         # 出場試合数の記録
@@ -1108,10 +964,11 @@ def get_batting_stats_filtered(club_id):
             processed_at_bats.add(at_bat_key)
 
         if name not in stats:
+            # stats.py が要求する全項目を初期化
             stats[name] = {
                 "試合":0, "打席":0, "打数":0, "安打":0, "二塁打":0, "三塁打":0, "本塁打":0,
                 "塁打":0, "打点":0, "盗塁":0, "犠打":0, "犠飛":0, "四球":0, "死球":0, 
-                "三振":0, "敵失":0, "併殺":0, "野選":0,
+                "三振":0, "敵失":0, "併殺":0, "野選":0, "進塁打":0, "失策":0,
                 "2スト安打":0, "初球振":0, "貢献打":0, "インプレー安打":0, "インプレー打数":0
             }
         
@@ -1135,12 +992,14 @@ def get_batting_stats_filtered(club_id):
             s_ref["打席"] += (ab + ls.get("bb", 0) + ls.get("hbp", 0) + ls.get("sh", 0) + ls.get("sf", 0))
         else:
             # --- 新設フラグの集計 ---
-            if row['two_strike_hit'] == 1: s_ref["2スト安打"] += 1
-            if row['first_pitch_swing'] == 1: s_ref["初球振"] += 1
+            if row_dict.get('two_strike_hit') == 1: s_ref["2スト安打"] += 1
+            if row_dict.get('first_pitch_swing') == 1: s_ref["初球振"] += 1
             
-            res = row['final_result'] if row['final_result'] else (row['result'] if row['result'] else "")
+            # final_resultが存在しない場合の安全なフォールバック
+            res = row_dict.get('final_result') or row_dict.get('result') or ""
+            
             s_ref["打席"] += 1
-            s_ref["打点"] += row['rbi'] if row['rbi'] else 0
+            s_ref["打点"] += row_dict.get('rbi') or 0
             
             # 精密判定
             is_bb = any(x in res for x in ["四球", "歩"])
@@ -1161,84 +1020,63 @@ def get_batting_stats_filtered(club_id):
             elif is_sh: s_ref["犠打"] += 1
             elif is_sf: s_ref["犠飛"] += 1
             else:
-                # 打数にカウントされるもの
                 s_ref["打数"] += 1
                 if is_h1:
-                    s_ref["安打"] += 1
-                    s_ref["塁打"] += 1
-                    s_ref["インプレー安打"] += 1
+                    s_ref["安打"] += 1; s_ref["塁打"] += 1; s_ref["インプレー安打"] += 1
                 elif is_h2:
-                    s_ref["安打"] += 1
-                    s_ref["二塁打"] += 1
-                    s_ref["塁打"] += 2
-                    s_ref["インプレー安打"] += 1
+                    s_ref["安打"] += 1; s_ref["二塁打"] += 1; s_ref["塁打"] += 2; s_ref["インプレー安打"] += 1
                 elif is_h3:
-                    s_ref["安打"] += 1
-                    s_ref["三塁打"] += 1
-                    s_ref["塁打"] += 3
-                    s_ref["インプレー安打"] += 1
+                    s_ref["安打"] += 1; s_ref["三塁打"] += 1; s_ref["塁打"] += 3; s_ref["インプレー安打"] += 1
                 elif is_h4:
-                    s_ref["安打"] += 1
-                    s_ref["本塁打"] += 1
-                    s_ref["塁打"] += 4
-                    # 本塁打はBABIP（インプレー）には含めないのが一般的
+                    s_ref["安打"] += 1; s_ref["本塁打"] += 1; s_ref["塁打"] += 4
                 elif is_so:
                     s_ref["三振"] += 1
                 elif is_err:
-                    s_ref["敵失"] += 1
-                    s_ref["インプレー打数"] += 1
+                    s_ref["敵失"] += 1; s_ref["インプレー打数"] += 1
                 elif is_fc:
-                    s_ref["野選"] += 1
-                    s_ref["インプレー打数"] += 1
+                    s_ref["野選"] += 1; s_ref["インプレー打数"] += 1
                 elif is_dp:
-                    s_ref["併殺"] += 1
-                    s_ref["インプレー打数"] += 1
+                    s_ref["併殺"] += 1; s_ref["インプレー打数"] += 1
                 else:
-                    # ゴロ、飛球などの凡打
                     s_ref["インプレー打数"] += 1
 
-            # 貢献打の判定
-            if (row['rbi'] and row['rbi'] > 0) or is_sh or is_sf or "進塁打" in res:
+            # 貢献打・進塁打の判定
+            if (row_dict.get('rbi') and row_dict.get('rbi') > 0) or is_sh or is_sf or "進塁打" in res:
                 s_ref["貢献打"] += 1
+            if "進塁打" in res:
+                s_ref["進塁打"] += 1
 
-    # 最終集計と率計算（セイバー指標含む）
+    # 最終集計と率計算
     final_list = []
     for name, s in stats.items():
         s["試合"] = len(player_games.get(name, set()))
         ab, pa, h, h123 = s["打数"], s["打席"], s["安打"], (s["安打"] - s["本塁打"])
         bb_hbp = s["四球"] + s["死球"]
         
-        # 基本指標
         s["打率"] = round(h / ab, 3) if ab > 0 else 0.000
         s["出塁率"] = round((h + bb_hbp) / pa, 3) if pa > 0 else 0.000
         s["長打率"] = round(s["塁打"] / ab, 3) if ab > 0 else 0.000
         s["OPS"] = round(s["出塁率"] + s["長打率"], 3)
+        s["貢献打率"] = round(s["貢献打"] / pa, 3) if pa > 0 else 0.000
+        s["三振率"] = round(s["三振"] / pa, 3) if pa > 0 else 0.000
         
-        # セイバー指標
-        # BABIP = (安打 - 本塁打) / (打数 - 三振 - 本塁打 + 犠飛)
         babip_den = (ab - s["三振"] - s["本塁打"] + s["犠飛"])
         s["BABIP"] = round(h123 / babip_den, 3) if babip_den > 0 else 0.000
-        
         s["初球スイング率"] = round(s["初球振"] / pa, 3) if pa > 0 else 0.000
-        s["三振率"] = round(s["三振"] / pa, 3) if pa > 0 else 0.000
+        
         s["name"] = name
         final_list.append(s)
         
     return final_list
 
-# ■■■精密一覧のためのコード（打者）
 
+# ■■■精密一覧のためのコード（打者個人）
 def get_player_detailed_stats(player_name, club_id):
-    """
-    選手個人の詳細スタッツを算出。
-    新設されたセイバーメトリクス用フラグを活用し、チーム集計と整合性のとれた精密な結果を返します。
-    """
     import json
     import sqlite3
 
-    # 新設カラムを取得対象に追加
     query = """
-        SELECT result, final_result, rbi, two_strike_hit, first_pitch_swing, raw_data_json 
+        SELECT result, rbi, two_strike_hit, first_pitch_swing, raw_data_json 
         FROM super_detailed_at_bats 
         WHERE batter_name = ? AND club_id = ?
     """
@@ -1249,7 +1087,6 @@ def get_player_detailed_stats(player_name, club_id):
         c.execute(query, (player_name, club_id))
         rows = c.fetchall()
 
-    # 初期スコアボード
     s = {
         "pa":0, "ab":0, "h":0, "h2":0, "h3":0, "hr":0, "rbi":0, "so":0, "bb":0, "hbp":0, "sf":0, "sb":0, 
         "two_strike_hit":0, "first_pitch_swing":0,
@@ -1257,38 +1094,27 @@ def get_player_detailed_stats(player_name, club_id):
     }
 
     for row in rows:
-        raw = json.loads(row['raw_data_json'])
+        row_dict = dict(row)
+        raw = json.loads(row_dict['raw_data_json']) if row_dict['raw_data_json'] else {}
         is_legacy = raw.get("source") == "legacy_migration"
         
         if is_legacy:
             ls = raw.get("legacy_stats", {})
             h, h2, h3, hr = ls.get("h", 0), ls.get("h2", 0), ls.get("h3", 0), ls.get("hr", 0)
             ab = ls.get("ab", 0)
-            s["ab"] += ab
-            s["h"]  += h
-            s["h2"] += h2
-            s["h3"] += h3
-            s["hr"] += hr
-            s["rbi"]+= ls.get("rbi", 0)
-            s["so"] += ls.get("so", 0)
-            s["bb"] += ls.get("bb", 0)
-            s["hbp"]+= ls.get("hbp", 0)
-            s["sf"] += ls.get("sf", 0)
-            s["sb"] += ls.get("sb", 0)
-            # 打席数 = 打数 + 四死球 + 犠飛 + 犠打(sh)
+            s["ab"] += ab; s["h"] += h; s["h2"] += h2; s["h3"] += h3; s["hr"] += hr
+            s["rbi"]+= ls.get("rbi", 0); s["so"] += ls.get("so", 0)
+            s["bb"] += ls.get("bb", 0); s["hbp"]+= ls.get("hbp", 0)
+            s["sf"] += ls.get("sf", 0); s["sb"] += ls.get("sb", 0)
             s["pa"] += (ab + ls.get("bb",0) + ls.get("hbp",0) + ls.get("sf",0) + ls.get("sh",0))
-        
         else:
-            # --- 新設フラグの加算（SQLから直接取得） ---
-            if row['two_strike_hit'] == 1: s["two_strike_hit"] += 1
-            if row['first_pitch_swing'] == 1: s["first_pitch_swing"] += 1
+            if row_dict.get('two_strike_hit') == 1: s["two_strike_hit"] += 1
+            if row_dict.get('first_pitch_swing') == 1: s["first_pitch_swing"] += 1
             
-            # 結果判定：final_result（保存時に確定した正規化データ）を最優先
-            res = row['final_result'] if row['final_result'] else (row['result'] if row['result'] else "")
+            res = row_dict.get('final_result') or row_dict.get('result') or ""
             s["pa"] += 1
-            s["rbi"] += row['rbi'] if row['rbi'] else 0
+            s["rbi"] += row_dict.get('rbi') or 0
             
-            # 判定フラグの生成
             is_bb = any(x in res for x in ["四球", "歩"])
             is_hbp = "死球" in res
             is_hr = "本塁打" in res
@@ -1299,16 +1125,11 @@ def get_player_detailed_stats(player_name, club_id):
             is_sf = "犠飛" in res
             is_sh = any(x in res for x in ["犠打", "送りバント"])
 
-            if is_bb: 
-                s["bb"] += 1
-            elif is_hbp: 
-                s["hbp"] += 1
-            elif is_sf: 
-                s["sf"] += 1
-            elif is_sh: 
-                pass # 犠打はABに含めず、PAのみにカウント
+            if is_bb: s["bb"] += 1
+            elif is_hbp: s["hbp"] += 1
+            elif is_sf: s["sf"] += 1
+            elif is_sh: pass 
             else:
-                # 打数にカウントされるケース
                 s["ab"] += 1
                 if is_h1: s["h"] += 1
                 elif is_h2: s["h"] += 1; s["h2"] += 1
@@ -1318,27 +1139,19 @@ def get_player_detailed_stats(player_name, club_id):
 
             if "盗" in res: s["sb"] += 1
 
-            # 打球方向の統計（可視化用）
             if any(x in res for x in ["左", "三", "遊"]): s["pull_count"] += 1
             elif any(x in res for x in ["中", "二", "投", "捕"]): s["center_count"] += 1
             elif any(x in res for x in ["右", "一"]): s["oppo_count"] += 1
 
-    # 指標の精密計算
     s["avg"] = round(s["h"] / s["ab"], 3) if s["ab"] > 0 else 0.000
     s["obp"] = round((s["h"] + s["bb"] + s["hbp"]) / s["pa"], 3) if s["pa"] > 0 else 0.000
-    
-    # 塁打計算：単打(H-H2-H3-HR) + 2*H2 + 3*H3 + 4*HR
     h1 = s["h"] - (s["h2"] + s["h3"] + s["hr"])
     total_bases = (h1 + 2*s["h2"] + 3*s["h3"] + 4*s["hr"])
-    
     s["slg"] = round(total_bases / s["ab"], 3) if s["ab"] > 0 else 0.000
     s["ops"] = round(s["obp"] + s["slg"], 3)
     
-    # BABIP: (安打 - 本塁打) / (打数 - 三振 - 本塁打 + 犠飛)
     babip_denom = (s["ab"] - s["so"] - s["hr"] + s["sf"])
     s["babip"] = round((s["h"] - s["hr"]) / babip_denom, 3) if babip_denom > 0 else 0.000
-    
-    # 強化指標：2スト安打率、初球スイング率
     s["two_strike_hit_rate"] = round(s["two_strike_hit"] / s["pa"], 3) if s["pa"] > 0 else 0.000
     s["first_pitch_swing_rate"] = round(s["first_pitch_swing"] / s["pa"], 3) if s["pa"] > 0 else 0.000
     
@@ -1346,12 +1159,7 @@ def get_player_detailed_stats(player_name, club_id):
 
 
 # ■■■精密一覧のためのコード（投手）
-
 def get_pitching_stats_filtered(club_id):
-    """
-    自チーム投手の成績を算出。
-    振り逃げ出塁時の「奪三振カウント」と「アウト数非カウント」を正確に判定します。
-    """
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -1362,57 +1170,51 @@ def get_pitching_stats_filtered(club_id):
     processed_at_bats = set()
 
     for row in rows:
-        # --- 1. 敵味方判定（相手打者との対戦 ＝ 味方投手の実績） ---
-        batter_name = row['batter_name'] if row['batter_name'] else ""
+        row_dict = dict(row)
+        batter_name = row_dict.get('batter_name') or ""
         if "相手" not in batter_name:
             continue
 
-        # --- 2. 重複排除 ---
-        at_bat_key = f"{row['game_id']}_{row['at_bat_no']}"
+        at_bat_key = f"{row_dict['game_id']}_{row_dict['at_bat_no']}"
         if at_bat_key in processed_at_bats:
             continue
         processed_at_bats.add(at_bat_key)
 
-        name = row['pitcher_name'] if row['pitcher_name'] and row['pitcher_name'] != "Unknown" else "自チーム投手"
+        name = row_dict.get('pitcher_name')
+        name = name if name and name != "Unknown" else "自チーム投手"
 
         if name not in stats:
+            # stats.py が要求する全項目を初期化
             stats[name] = {
                 "name": name, "登板": 0, "アウト数": 0, "失点": 0, "自責点": 0, 
                 "奪三振": 0, "四球": 0, "死球": 0, "被安打": 0, "被本塁打": 0, 
-                "投球数": 0, "打者数": 0, "game_ids": set()
+                "投球数": 0, "打者数": 0, "game_ids": set(),
+                "勝利":0, "敗戦":0, "セーブ":0, "ホールド":0, "WP":0, "CS":0, "被盗塁":0
             }
         
         s = stats[name]
-        s["game_ids"].add(row['game_id'])
+        s["game_ids"].add(row_dict['game_id'])
         
-        res = row['final_result'] if row.get('final_result') else (row['result'] if row['result'] else "")
-
-        # --- 3. JSON解析（詳細判定用） ---
-        raw_json = row['raw_data_json']
-        is_strikeout_flag = False # 振り逃げ時などの奪三振救済フラグ
+        res = row_dict.get('final_result') or row_dict.get('result') or ""
+        raw_json = row_dict.get('raw_data_json')
+        is_strikeout_flag = False
         json_outs = 0
         json_success = False
 
         if raw_json:
             try:
                 data = json.loads(raw_json)
-                
-                # [NEW] 振り逃げメタデータの確認
-                # play_logの各エントリを確認（is_strikeout_statが含まれているか）
                 if "play_log" in data:
                     for log in data["play_log"]:
                         if log.get("meta", {}).get("is_strikeout_stat"):
                             is_strikeout_flag = True
                             break
 
-                # 打者・走者のアウト状態
                 b_stat = data.get('batter', {}).get('status') or data.get('batter', {}).get('predicted_status')
-                if b_stat == "アウト":
-                    json_outs += 1
+                if b_stat == "アウト": json_outs += 1
                 for runner in data.get('runners', []):
                     r_stat = runner.get('status') or runner.get('predicted_status')
-                    if r_stat == "アウト":
-                        json_outs += 1
+                    if r_stat == "アウト": json_outs += 1
                 
                 if json_outs > 0:
                     s["アウト数"] += json_outs
@@ -1420,30 +1222,22 @@ def get_pitching_stats_filtered(club_id):
             except:
                 pass
 
-        # --- 4. アウトカウント判定：安全装置 ---
         if not json_success:
-            if "併殺" in res: 
-                s["アウト数"] += 2
-            # 振り逃げ(結果が振り逃げ)の場合は、ここでアウトを増やさない
-            elif "振り逃げ" in res:
-                pass 
-            elif any(x in res for x in ["見", "空"]):
-                s["アウト数"] += 1
+            if "併殺" in res: s["アウト数"] += 2
+            elif "振り逃げ" in res: pass 
+            elif any(x in res for x in ["見", "空"]): s["アウト数"] += 1
             elif any(x in res for x in ["ゴ", "飛", "直", "野選"]): 
                 if "失" not in res or "野選" in res:
                     s["アウト数"] += 1
 
-        # --- 5. スタッツ集計 ---
         s["打者数"] += 1
-        s["投球数"] += row['pitch_count'] if row['pitch_count'] else 0
-        rbi = row['rbi'] if row['rbi'] else 0
+        s["投球数"] += row_dict.get('pitch_count') or 0
+        rbi = row_dict.get('rbi') or 0
         s["失点"] += rbi
         
-        if row.get('is_earned_run') == 1:
-            s["自責点"] += rbi
-        elif row.get('is_earned_run') is None:
-            if "失" not in res:
-                s["自責点"] += rbi
+        if row_dict.get('is_earned_run') == 1: s["自責点"] += rbi
+        elif row_dict.get('is_earned_run') is None:
+            if "失" not in res: s["自責点"] += rbi
 
         if any(x in res for x in ["安打", "単打", "二塁打", "三塁打", "本塁打"]): 
             s["被安打"] += 1
@@ -1451,13 +1245,12 @@ def get_pitching_stats_filtered(club_id):
 
         if "四球" in res: s["四球"] += 1
         if "死球" in res: s["死球"] += 1
+        if "暴投" in res or "WP" in res: s["WP"] += 1
+        if "盗塁刺" in res or "CS" in res: s["CS"] += 1
+        if "盗塁" in res and "刺" not in res: s["被盗塁"] += 1
         
-        # [MOD] 奪三振の判定
-        # 通常の三振表記、またはメタデータに三振フラグがある場合
-        if "振" in res or is_strikeout_flag:
-            s["奪三振"] += 1 
+        if "振" in res or is_strikeout_flag: s["奪三振"] += 1 
 
-    # --- 6. 最終計算（7イニング制） ---
     final_list = []
     REGULATION_INN = 7
 
@@ -1469,11 +1262,18 @@ def get_pitching_stats_filtered(club_id):
         
         s["防御率"] = round((s["自責点"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
         s["奪三振率"] = round((s["奪三振"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
+        s["四球率"] = round((s["四球"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
+        s["死球率"] = round((s["死球"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
         s["被安率"] = round((s["被安打"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
+        s["被本率"] = round((s["被本塁打"] * REGULATION_INN) / ip_float, 2) if ip_float > 0 else 0.00
         s["K/BB"] = round(s["奪三振"] / s["四球"], 2) if s["四球"] > 0 else float(s["奪三振"])
         s["WHIP"] = round((s["被安打"] + s["四球"]) / ip_float, 2) if ip_float > 0 else 0.00
         
+        total_steal_attempts = s["CS"] + s["被盗塁"]
+        s["CS率"] = round(s["CS"] / total_steal_attempts, 3) if total_steal_attempts > 0 else 0.000
+        
         del s["game_ids"]
+        del s["被盗塁"]
         final_list.append(s)
         
     return final_list
