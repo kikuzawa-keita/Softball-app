@@ -885,30 +885,32 @@ def render_action_panel():
     if st.button("🚫 イニングを強制終了 (10点コールド等)", type="secondary", use_container_width=True):
         gp = st.session_state.get("game_progress", {})
         current_tb = gp.get("top_bottom", "表")
-        current_inning = gp.get("inning", 1)
         if current_tb == "表":
             gp["top_bottom"] = "裏"
         else:
             gp["top_bottom"] = "表"
-            gp["inning"] = current_inning + 1
+            gp["inning"] = gp.get("inning", 1) + 1
 
         gp["outs"] = 0
         gp["balls"] = 0
         gp["strikes"] = 0
-        gp["runners"] = {"1B": None, "2B": None, "3B": None}
+        gp["runners"] = {1: None, 2: None, 3: None, "1B": None, "2B": None, "3B": None}
         gp["pitch_count"] = 0
-        st.session_state["game_progress"] = gp
+        gp["active_page"] = "CHANGE"
+
+        if "count" in st.session_state:
+            st.session_state.count = {'B': 0, 'S': 0, 'O': 0}
 
         st.session_state.outs = 0
         st.session_state.balls = 0
         st.session_state.strikes = 0
-        st.session_state.runners = {"1B": None, "2B": None, "3B": None}
-
-        if "current_outs" in st.session_state: st.session_state.current_outs = 0
-        if "at_bat_history" in st.session_state: st.session_state.at_bat_history = []
+        st.session_state.runners = {1: None, 2: None, 3: None, "1B": None, "2B": None, "3B": None}
         st.session_state.active_page = "CHANGE"
+        st.session_state["game_progress"] = gp
+        if "save_game_state_to_db" in globals():
+            save_game_state_to_db()
             
-        st.success("攻守を交替しました")
+        st.success("次イニングへ遷移します。")
         st.rerun()
     
     show_nav_buttons("order")
