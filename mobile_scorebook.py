@@ -881,6 +881,21 @@ def render_action_panel():
         finish_at_bat("スキップ(欠員/負傷)", hit_bases=0)
         save_game_state_to_db()
         st.rerun()
+
+    if st.button("🚫 イニングを強制終了 (10点コールド等)", type="secondary", use_container_width=True):
+            if st.session_state.is_top_flag == 0:
+                st.session_state.is_top_flag = 1
+            else:
+                st.session_state.is_top_flag = 0
+                st.session_state.current_inning += 1
+
+            st.session_state.outs = 0
+            st.session_state.balls = 0
+            st.session_state.strikes = 0
+            st.session_state.runners = {"1B": None, "2B": None, "3B": None}
+            
+            st.warning("イニングを強制終了し、攻守を交替しました。")
+            st.rerun()
     
     show_nav_buttons("order")
 
