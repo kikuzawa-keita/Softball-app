@@ -900,9 +900,12 @@ def render_action_panel():
         gp["pitch_count"] = 0 
 
         st.session_state["game_progress"] = gp
-        st.session_state.active_page = "CHANGE"
-        st.success("イニングを強制終了しました。")
-        st.rerun()
+
+        if "at_bat_history" in st.session_state:
+            st.session_state.at_bat_history = []
+            st.session_state.active_page = "CHANGE"
+            st.toast("イニングを強制終了し、カウントをリセットしました")
+            st.rerun()
     
     show_nav_buttons("order")
 
