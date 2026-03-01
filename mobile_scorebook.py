@@ -1585,6 +1585,19 @@ def show_defense_sub():
 
 # ■代打------------------------
 
+def get_total_at_bats_for_order(is_my_team, order_idx):
+
+    gp = st.session_state.get("game_progress", {})
+    events = gp.get("events", [])
+    
+    count = 0
+    target_team = "my" if is_my_team else "opp"
+    
+    for ev in events:
+        if ev.get("team") == target_team and ev.get("bat_idx") == order_idx:
+            count += 1
+            
+    return count
 def show_pinch_hitter():
     gp = st.session_state.get("game_progress", {})
     is_offense = gp.get("is_offense", True)
