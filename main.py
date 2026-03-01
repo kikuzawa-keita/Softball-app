@@ -13,9 +13,9 @@ db.init_db()
 #     🛠️ メンテナンス・設定 
 # ------------------------------
 
-# 作業時は True に書き換えて Push する
+# 作業時は False を True に書き換えて Push する
 
-IS_MAINTENANCE = True
+IS_MAINTENANCE = False
 
 # git add main.py
 # git commit -m "メンテナンスモード有効化"
@@ -209,3 +209,4 @@ elif page_key == "settings":
 
 
 # 20260226 Ver.1.0
+
