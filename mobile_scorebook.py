@@ -883,29 +883,26 @@ def render_action_panel():
         st.rerun()
 
     if st.button("🚫 イニングを強制終了 (10点コールド等)", type="secondary", use_container_width=True):
-            if "is_top_flag" not in st.session_state:
-                st.session_state.is_top_flag = 0  # デフォルト先攻
-            if "current_inning" not in st.session_state:
-                st.session_state.current_inning = 1
+        gp = st.session_state.get("game_progress", {})
+        current_tb = gp.get("top_bottom", "表")
+        current_inning = gp.get("inning", 1)
 
-            if st.session_state.is_top_flag == 0:
-                st.session_state.is_top_flag = 1
-                st.toast("後攻（裏）の攻撃に移ります")
-            else:
-                st.session_state.is_top_flag = 0
-                st.session_state.current_inning += 1
-                st.toast(f"イニング終了。第{st.session_state.current_inning}回へ")
+        if current_tb == "表":
+            gp["top_bottom"] = "裏"
+        else:
+            gp["top_bottom"] = "表"
+            gp["inning"] = current_inning + 1
 
-            st.session_state.outs = 0
-            st.session_state.balls = 0
-            st.session_state.strikes = 0
-            st.session_state.runners = {"1B": None, "2B": None, "3B": None}
+        gp["outs"] = 0
+        gp["balls"] = 0
+        gp["strikes"] = 0
+        gp["runners"] = {"1B": None, "2B": None, "3B": None}
+        gp["pitch_count"] = 0 
 
-            if "pitch_count" in st.session_state:
-                st.session_state.pitch_count = 0
-            
-            st.success("イニングを強制終了し、攻守を交替しました。")
-            st.rerun()
+        st.session_state["game_progress"] = gp
+        st.session_state.active_page = "CHANGE"
+        st.success("イニングを強制終了しました。")
+        st.rerun()
     
     show_nav_buttons("order")
 
