@@ -886,7 +886,6 @@ def render_action_panel():
         gp = st.session_state.get("game_progress", {})
         current_tb = gp.get("top_bottom", "表")
         current_inning = gp.get("inning", 1)
-
         if current_tb == "表":
             gp["top_bottom"] = "裏"
         else:
@@ -897,15 +896,20 @@ def render_action_panel():
         gp["balls"] = 0
         gp["strikes"] = 0
         gp["runners"] = {"1B": None, "2B": None, "3B": None}
-        gp["pitch_count"] = 0 
-
+        gp["pitch_count"] = 0
         st.session_state["game_progress"] = gp
 
-        if "at_bat_history" in st.session_state:
-            st.session_state.at_bat_history = []
-            st.session_state.active_page = "CHANGE"
-            st.toast("イニングを強制終了し、カウントをリセットしました")
-            st.rerun()
+        st.session_state.outs = 0
+        st.session_state.balls = 0
+        st.session_state.strikes = 0
+        st.session_state.runners = {"1B": None, "2B": None, "3B": None}
+
+        if "current_outs" in st.session_state: st.session_state.current_outs = 0
+        if "at_bat_history" in st.session_state: st.session_state.at_bat_history = []
+        st.session_state.active_page = "CHANGE"
+            
+        st.success("攻守を交替しました")
+        st.rerun()
     
     show_nav_buttons("order")
 
