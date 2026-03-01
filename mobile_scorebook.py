@@ -883,18 +883,28 @@ def render_action_panel():
         st.rerun()
 
     if st.button("🚫 イニングを強制終了 (10点コールド等)", type="secondary", use_container_width=True):
+            if "is_top_flag" not in st.session_state:
+                st.session_state.is_top_flag = 0  # デフォルト先攻
+            if "current_inning" not in st.session_state:
+                st.session_state.current_inning = 1
+
             if st.session_state.is_top_flag == 0:
                 st.session_state.is_top_flag = 1
+                st.toast("後攻（裏）の攻撃に移ります")
             else:
                 st.session_state.is_top_flag = 0
                 st.session_state.current_inning += 1
+                st.toast(f"イニング終了。第{st.session_state.current_inning}回へ")
 
             st.session_state.outs = 0
             st.session_state.balls = 0
             st.session_state.strikes = 0
             st.session_state.runners = {"1B": None, "2B": None, "3B": None}
+
+            if "pitch_count" in st.session_state:
+                st.session_state.pitch_count = 0
             
-            st.warning("イニングを強制終了し、攻守を交替しました。")
+            st.success("イニングを強制終了し、攻守を交替しました。")
             st.rerun()
     
     show_nav_buttons("order")
