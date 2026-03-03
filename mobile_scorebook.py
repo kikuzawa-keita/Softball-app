@@ -1864,30 +1864,34 @@ def show_pinch_hitter():
     is_my_offense = (flag == 0 and tb == "表") or (flag == 1 and tb == "裏")    
     st.markdown(f"### 🏃 {'自チーム' if is_my_offense else '相手チーム'} 代打")
 
-    if is_my_offense:
-        players_data = db.get_all_players(st.session_state.club_id)
-        names = ["(未選択)"] + [p[1] for p in players_data]
-
-        order_slot = st.session_state.active_game_order[idx]
-        old_player = order_slot[-1]
-        
-        new_p = st.selectbox(f"{idx+1}番 {old_player['name']} に代わる選手", names)
-        
-        if st.button("代打確定", type="primary", use_container_width=True):
+    if st.button("代打確定", type="primary", use_container_width=True):
             if new_p != "(未選択)":
-                start_idx = len(order_slot) 
+
+                history = st.session_state.get("at_bat_history", [])
+
+                current_total_abs = 0
+                if history:
+                    current_total_abs = len([h for h in history if h.get("event_type") in ["at_bat_result", "runner_event"]])
+
+                start_idx = current_total_abs + 1
+
                 p_no = next((p[2] for p in players_data if p[1] == new_p), "")
 
                 st.session_state.active_game_order[idx].append({
-                    "name": new_p, "pos": old_player['pos'], "no": p_no, 
-                    "start_at_bat_idx": start_idx, "is_pinch_hitter": True
+                    "name": new_p, 
+                    "pos": old_player['pos'], 
+                    "no": p_no, 
+                    "start_at_bat_idx": start_idx, 
+                    "is_pinch_hitter": True
                 })
 
                 record_play_event("pinch_hitter", f"代打: {old_player['name']} → {new_p}", meta={"slot": idx})
                 save_game_state_to_db()
                 go_to("playball")
                 st.rerun()
+
     else:
+
         opp_slot = st.session_state.opponent_players[idx]
         old_player = opp_slot[-1]
 
@@ -1895,10 +1899,22 @@ def show_pinch_hitter():
 
         if st.button("相手代打確定", type="primary", use_container_width=True):
             if new_name:
+                history = st.session_state.get("at_bat_history", [])
+
+                current_total_abs = 0
+                if history:
+
+                    current_total_abs = len([h for h in history if h.get("event_type") in ["at_bat_result", "runner_event"]])
+
+                start_idx = current_total_abs + 1
+
                 st.session_state.opponent_players[idx].append({
-                    "name": new_name, "pos": old_player.get('pos','---'), 
-                    "start_at_bat_idx": len(opp_slot), "is_pinch_hitter": True
+                    "name": new_name, 
+                    "pos": old_player.get('pos','---'), 
+                    "start_at_bat_idx": start_idx, 
+                    "is_pinch_hitter": True
                 })
+                
                 record_play_event("pinch_hitter", f"相手代打: {old_player.get('name','')} → {new_name}", meta={"slot": idx})
                 save_game_state_to_db()
                 go_to("playball")
