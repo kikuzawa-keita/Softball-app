@@ -141,10 +141,16 @@ def show():
 
 # ■見出し-----------------
 
+        if is_batting_first == 0:  # 自チームが先攻(Visitor)
+            final_my_score = v_total_score
+            final_opp_score = h_total_score
+        else:                      # 自チームが後攻(Home)
+            final_my_score = h_total_score
+            final_opp_score = v_total_score
 
-        if my_score > opp_score:
+        if final_my_score > final_opp_score:
             bg_color = "#e6f3ff"; border_color = "#004085"; result_label = "WIN"
-        elif my_score < opp_score:
+        elif final_my_score < final_opp_score:
             bg_color = "#f8d7da"; border_color = "#721c24"; result_label = "LOSE"
         else:
             bg_color = "#fff3cd"; border_color = "#856404"; result_label = "DRAW"
@@ -152,9 +158,9 @@ def show():
         top_bottom_label = "先攻(表)" if is_batting_first == 0 else "後攻(裏)"
 
         if is_batting_first == 0:
-            score_text = f"自 {my_score} - {opp_score} 敵"
+            score_text = f"自 {final_my_score} - {final_opp_score} 敵"
         else:
-            score_text = f"敵 {opp_score} - {my_score} 自"
+            score_text = f"敵 {final_opp_score} - {final_my_score} 自"
 
         header_html = f"""
             <div style="background-color: {bg_color}; padding: 12px 15px; border-radius: 5px; 
