@@ -83,7 +83,16 @@ def show():
         match_date_str = row['match_date']
         my_team_name = row['my_team_name']
         opp_team_name = row['opp_team_name']
-        is_top_flag = row['is_top_flag'] 
+
+        is_batting_first = int(row['is_top_flag'] or 0) 
+
+        if is_batting_first == 0:
+            top_team = my_team_name
+            bottom_team = opp_team_name
+
+        else:
+            top_team = opp_team_name
+            bottom_team = my_team_name
 
 
 # ■詳細版呼び出し-----------------------
@@ -93,15 +102,19 @@ def show():
             
             with sqlite3.connect("softball.db") as conn:
                 raw_id = g_id.replace("no_", "")
-                g_info = pd.read_sql("SELECT my_score, opp_score FROM games WHERE id=?", conn, params=(raw_id,))
+                g_info = pd.read_sql("SELECT my_score, opp_score, is_top_flag FROM games WHERE id=?", conn, params=(raw_id,))
                 
                 if not g_info.empty:
                     my_score = int(g_info.iloc[0]['my_score'])
                     opp_score = int(g_info.iloc[0]['opp_score'])
+                    if is_batting_first == 0:
+                        top_score, bottom_score = my_score, opp_score
+                    else:
+                        top_score, bottom_score = opp_score, my_score
                 else:
-                    my_score, opp_score = 0, 0
+                    top_score, bottom_score = 0, 0
 
-            logs = pd.DataFrame()
+            st.write(f"### {match_date_str} {top_team} {top_score} - {bottom_score} {bottom_team}")
 
 # ■分析版呼び出し------------------------
 
@@ -118,27 +131,50 @@ def show():
             my_score = int(logs['start_score_my'].max()) if pd.notna(logs['start_score_my'].max()) else 0
             opp_score = int(logs['start_score_opp'].max()) if pd.notna(logs['start_score_opp'].max()) else 0
 
+            if is_batting_first == 0:
+                top_score, bottom_score = my_score, opp_score
+            else:
+                top_score, bottom_score = opp_score, my_score
+
+            st.write(f"### {match_date_str} {top_team} {top_score} - {bottom_score} {bottom_team}")
+
 
 # ■見出し-----------------
 
-        if my_score > opp_score:
-            bg_color = "#e6f3ff"; border_color = "#004085"
-        elif my_score < opp_score:
-            bg_color = "#f8d7da"; border_color = "#721c24"
-        else:
-            bg_color = "#fff3cd"; border_color = "#856404"
 
-        top_bottom_str = "先攻" if is_top_flag == 0 else "後攻"
-        
+        if my_score > opp_score:
+            bg_color = "#e6f3ff"; border_color = "#004085"; result_label = "WIN"
+        elif my_score < opp_score:
+            bg_color = "#f8d7da"; border_color = "#721c24"; result_label = "LOSE"
+        else:
+            bg_color = "#fff3cd"; border_color = "#856404"; result_label = "DRAW"
+
+        top_bottom_label = "先攻(表)" if is_batting_first == 0 else "後攻(裏)"
+
+        if is_batting_first == 0:
+            score_text = f"自 {my_score} - {opp_score} 敵"
+        else:
+            score_text = f"敵 {opp_score} - {my_score} 自"
+
         header_html = f"""
             <div style="background-color: {bg_color}; padding: 12px 15px; border-radius: 5px; 
                  border-left: 8px solid {border_color}; margin-bottom: 5px; display: flex; align-items: center;">
                 <div style="color: {border_color}; font-size: 0.95rem; width: 100%;">
-                    <div style="font-size: 1.15rem; margin-bottom: 3px; opacity: 0.8; font-weight: bold;">
-                        {my_team_name} 戦 :  {match_date_str}
-                    <span>
-                        {opp_team_name} （{my_score} - {opp_score}） 
-                    </span>
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <span style="font-size: 1.15rem; font-weight: bold;">
+                            vs {opp_team_name}
+                        </span>
+                        <span style="font-size: 0.85rem; opacity: 0.8;">{match_date_str}</span>
+                    </div>
+                    <div style="font-size: 1.25rem; margin-top: 5px; font-weight: bold;">
+                        <span style="background: {border_color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75rem; vertical-align: middle; margin-right: 8px;">
+                            {result_label}
+                        </span>
+                        {score_text}
+                        <span style="font-size: 0.85rem; font-weight: normal; margin-left: 10px; opacity: 0.7;">
+                            [{top_bottom_label}]
+                        </span>
+                    </div>
                 </div>
             </div>
         """
@@ -149,16 +185,19 @@ def show():
 # ---------------------
 
         with st.expander(f"詳細表示 (ID: {g_id})"):
+
             
 # ===== 詳細版 =====
 
             if g_id.startswith("no_"):
 
-                is_my_team_top = (is_top_flag == 0) 
+                is_my_team_top = (is_batting_first == 0) 
+
                 visitor_name = my_team_name if is_my_team_top else opp_team_name
                 home_name = opp_team_name if is_my_team_top else my_team_name
-                v_total = my_score if is_my_team_top else opp_score
-                h_total = opp_score if is_my_team_top else my_score
+
+                v_total = top_score
+                h_total = bottom_score
 
                 v_scores, h_scores = [""] * 7, [""] * 7
 
@@ -171,6 +210,8 @@ def show():
                     "R": [v_total, h_total],
                     "H": ["-", "-"] 
                 }).set_index("チーム")
+                
+                st.write("### 🔢 スコアボード")
                 st.table(sb_df)
 
 
@@ -180,21 +221,18 @@ def show():
                 
                 tabs = st.tabs(tab_titles)
 
-                # 打撃成績タブ
                 with tabs[0]:
                     if not batting_df.empty:
                         st.dataframe(batting_df, use_container_width=True, hide_index=True)
                     else:
                         st.info("打撃データがありません。")
 
-                # 投手成績タブ
                 with tabs[1]:
                     if not pitching_df.empty:
                         st.dataframe(pitching_df, use_container_width=True, hide_index=True)
                     else:
                         st.info("投手データがありません。")
 
-                # 戦評タブ
                 with tabs[2]:
                     can_edit = user_role in ['operator', 'admin']
                     comment = db.get_game_comment(g_id, club_id) or ""
@@ -250,15 +288,18 @@ def show():
                 
 # ■スコアボード生成
 
-                is_my_team_top = (is_top_flag == 0) 
+                is_my_team_top = (is_batting_first == 0) 
+                
                 visitor_name = my_team_name if is_my_team_top else opp_team_name
                 home_name = opp_team_name if is_my_team_top else my_team_name                
                 
+                # ハンディキャップの取得
                 v_hc = logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0)
                 h_hc = logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0)
 
                 def get_stats_by_side(side_suffix):
                     scores = []
+                    # ログから「表」または「裏」のイニングデータを抽出
                     side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
 
                     for i in range(1, 8):
@@ -267,6 +308,7 @@ def show():
 
                         if not inn_logs.empty:
                             inning_run_count = 0
+                            # 生還者リスト（カンマ区切り）の数をカウントして得点とする
                             for res in inn_logs['run_result'].fillna(""):
                                 if res.strip():
                                     inning_run_count += len(res.split(','))
@@ -274,20 +316,29 @@ def show():
                         else:
                             scores.append("")
 
+                    # 安打数のカウント
                     h_count = len(side_logs[
                         (side_logs['event_type'] == 'at_bat_result') & 
                         (side_logs['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False))
                     ])
-                    e_in_this_log = len(side_logs[side_logs['at_bat_result'].str.contains('失策|失', na=False)])                    
-                    return scores, h_count, e_in_this_log
+                    # そのイニング「攻撃中」に相手が犯した失策をカウント
+                    e_occured_in_this_side = len(side_logs[side_logs['at_bat_result'].str.contains('失策|失', na=False)])                    
+                    return scores, h_count, e_occured_in_this_side
 
-                top_scores, top_h, e_on_top = get_stats_by_side("表")
-                bot_scores, bot_h, e_on_bot = get_stats_by_side("裏")
+                # 表（先攻）と裏（後攻）のデータを抽出
+                top_scores, top_h, e_on_top_attack = get_stats_by_side("表")
+                bot_scores, bot_h, e_on_bot_attack = get_stats_by_side("裏")
                 
-                v_e_final = e_on_bot
-                h_e_final = e_on_top
-                v_total_score = my_score if is_top_flag == 0 else opp_score
-                h_total_score = opp_score if is_top_flag == 0 else my_score
+                # 【重要】失策数(E)の割り当て
+                # 野球では「相手の攻撃中に自チームがしたミス」が自チームの失策。
+                # v_e_final (先攻の失策) = 裏(後攻)の攻撃中に発生した失策
+                v_e_final = e_on_bot_attack
+                # h_e_final (後攻の失策) = 表(先攻)の攻撃中に発生した失策
+                h_e_final = e_on_top_attack
+
+                # 合計スコアは事前に計算済みの top_score / bottom_score を使用
+                v_total_score = top_score
+                h_total_score = bottom_score
 
                 sb_df = pd.DataFrame({
                     "チーム": [visitor_name, home_name], 
@@ -324,7 +375,10 @@ def show():
                             return ''
 
                         rows_data = []
+                        # 選手名ごとにループ（※代打等で名前が違う場合は別行になる）
                         for name in side_bat_logs['batter_name'].unique():
+                            if not name: continue
+                            
                             p_bat = side_bat_logs[side_bat_logs['batter_name'] == name]                        
                             d = {
                                 "打順": int(p_bat['batting_order'].min()) if not p_bat['batting_order'].empty else 0,
@@ -335,33 +389,38 @@ def show():
                                 inn_str = f"{i}回{target_side}"
                                 inn_bat = p_bat[p_bat['inning'] == inn_str]
                                 if not inn_bat.empty:
+                                    # 同じイニングに2回打席が回った場合も考慮
                                     d[f"{i}"] = " / ".join(inn_bat['at_bat_result'].fillna("").astype(str).tolist())
                                 else:
                                     d[f"{i}"] = ""
 
+                            # 打点(RBI)の計算
                             rbi_count = 0
                             for res in p_bat['run_result'].fillna(""):
-                                if res.strip():
-                                    rbi_count += len(res.split(','))                        
+                                if str(res).strip():
+                                    rbi_count += len(str(res).split(','))                        
 
+                            # 得点(RUNS)の計算ロジック修正
                             def calculate_all_runs(df, target_name):
                                 total_runs = 0
                                 for res_val in df['run_result'].fillna(""):
-                                    if not res_val:
-                                        continue
+                                    if not res_val: continue
+                                    # 複数の生還者を分割してチェック
                                     scorers = [s.strip() for s in str(res_val).replace("、", ",").split(",") if s.strip()]
-                                    if target_name in scorers:
+                                    if target_name.strip() in scorers:
                                         total_runs += 1
-                                    return total_runs
+                                return total_runs # ← 修正：ループの外でリターン
 
                             run_count = calculate_all_runs(side_all_logs, name)
 
+                            # 盗塁
                             sb_count = len(side_all_logs[
                                 (side_all_logs['event_type'] == 'runner_event') & 
                                 (side_all_logs['at_bat_result'].str.contains('盗塁', na=False)) &
-                                (side_all_logs['batter_name'] == name)
+                                (side_all_logs['batter_name'].str.strip() == name.strip())
                             ])
 
+                            # 失策（守備側のログから自分の名前を探す）
                             error_count = (defense_logs['error_player'].fillna("").str.strip() == name.strip()).sum()
 
                             d.update({
@@ -372,7 +431,11 @@ def show():
                             })
                             rows_data.append(d)
                         
-                        df_res = pd.DataFrame(rows_data).sort_values("打順").set_index("打順")
+                        if not rows_data:
+                            st.info(f"{target_side}の打撃データがありません。")
+                            return
+
+                        df_res = pd.DataFrame(rows_data).sort_values(["打順", "選手名"]).set_index("打順")
                         cols = ["選手名"] + [f"{i}" for i in range(1, 8)] + ["打点", "得点", "盗塁", "失策"]
                         df_res = df_res[cols]
 
@@ -397,19 +460,22 @@ def show():
                             temp_pitcher_stats[p_name] = {"失点": r_count}
 
                         all_decisions = get_all_pitcher_decisions(
-                            is_top_flag, my_score, opp_score, target_side, 
+                            is_batting_first, my_score, opp_score, target_side, 
                             pitcher_order, temp_pitcher_stats
                         )
 
                         pitching_data = []
                         for p_name in pitcher_order:
+                            # 投手ごとのログ。ID順に並べないと投球回計算が狂うので sort は必須
                             p_logs = defense_logs[defense_logs['pitcher_name'] == p_name].sort_values('id')
+                            p_at_bats = p_logs[p_logs['event_type'] == 'at_bat_result']
                             
+                            # 投球回の算出ロジック (total_outs を集計)
                             total_outs = 0
                             for i in range(len(p_logs)):
                                 current_row = p_logs.iloc[i]
                                 try:
-                                    s_out = int(current_row['start_outs'])
+                                    s_out = int(current_row['start_outs'] or 0)
                                 except:
                                     s_out = 0
                                 
@@ -417,32 +483,35 @@ def show():
                                     next_row = p_logs.iloc[i+1]
                                     if current_row['inning'] == next_row['inning']:
                                         try:
-                                            n_out = int(next_row['start_outs'])
+                                            n_out = int(next_row['start_outs'] or 0)
                                             diff = n_out - s_out
-                                            if diff > 0:
-                                                total_outs += diff
-                                            elif diff < 0: 
-                                                total_outs += (3 - s_out)
-                                        except:
-                                            pass
+                                            if diff > 0: total_outs += diff
+                                            # イニング途中でアウトカウントが戻るのは通常ないので、正の差分のみ加算
+                                        except: pass
                                     else:
+                                        # イニングが変わった＝この投手はそのイニングを最後まで（または交代まで）投げた
+                                        # ここは 3-s_out ではなく、そのイベントでアウトが取れたかを厳密に見る方が安全ですが、
+                                        # 現状の「3アウトで交代」という前提ロジックを維持します。
                                         total_outs += (3 - s_out)
                                 else:
+                                    # 最後のログ：打席結果がアウト系ならプラス1
                                     res_str = str(current_row['at_bat_result']) + str(current_row['sub_detail'])
-                                    if not any(x in res_str for x in ["安打", "四球", "死球", "四死球", "失策", "本塁打"]):
-                                         total_outs += (3 - s_out)
+                                    if any(x in res_str for x in ["ゴロ", "飛", "直", "三振", "アウト", "犠"]):
+                                        total_outs += 1
 
+                            # IP表示 (例: 5 1/3)
                             ip = f"{total_outs // 3} {total_outs % 3}/3" if total_outs % 3 != 0 else f"{total_outs // 3}"
 
+                            # 球数計算 (JSONパース)
                             total_pitches = 0
+                            import json
                             for c_json in p_at_bats['counts_history_json'].fillna("[]"):
                                 try:
-                                    import json
                                     c_list = json.loads(c_json)
                                     total_pitches += len(c_list)
-                                except:
-                                    pass
+                                except: pass
 
+                            # 各種指標のカウント
                             h_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False)])
                             hr_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('本塁打', na=False)])
                             k_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('三振', na=False)])
@@ -450,46 +519,39 @@ def show():
                             hbp_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('死球', na=False)])
                             wp_count = len(p_logs[p_logs['at_bat_result'].str.contains('WP|ワイルドピッチ', na=False)])
 
-                            r_count = 0  
+                            # 失点・自責点の再計算
+                            r_count = 0 
                             er_count = 0 
-                            v_outs = 0  
-                            it_finished = False 
+                            v_outs_in_inning = 0  
+                            it_finished_virtually = False 
 
                             for _, r in p_logs.iterrows():
                                 res_text = str(r['at_bat_result']) + str(r['sub_detail'])
                                 is_err = "失" in res_text or "失策" in res_text
+                                # アウト判定
                                 is_out = any(x in res_text for x in ["アウト", "三振", "ゴロ", "飛", "直", "犠"])
 
-                                res_val = str(r['run_result']).strip()
-                                scorers = [s.strip() for s in res_val.replace("、", ",").split(",") if s.strip()]
+                                # 生還者
+                                scorers = [s.strip() for s in str(r['run_result']).replace("、", ",").split(",") if s.strip()]
                                 num_sc = len(scorers)
                                 r_count += num_sc
 
-                                if not it_finished and not is_err:
+                                # エラーが絡まない、かつ仮想的に3アウト取られるまでの失点をERとする
+                                if not it_finished_virtually and not is_err:
                                     er_count += num_sc
 
-                                if is_out:
-                                    v_outs += 1
-                                if is_err:
-                                    v_outs += 1 
-                                if v_outs >= 3:
-                                    it_finished = True
+                                if is_out: v_outs_in_inning += 1
+                                if is_err: v_outs_in_inning += 1 # エラーも仮想アウトに含める
+                                if v_outs_in_inning >= 3:
+                                    it_finished_virtually = True
 
-                            decision = all_decisions.get(p_name, "-")
+                            decision = decision = all_decisions.get(p_name, "-")
 
                             pitching_data.append({
-                                "投手名": p_name,
-                                "回": ip,
-                                "球数": total_pitches,
-                                "被安打": h_count,
-                                "被本": hr_count,
-                                "奪三振": k_count,
-                                "与四球": bb_count,
-                                "与死球": hbp_count,
-                                "WP": wp_count,
-                                "失点": r_count,
-                                "自責点": er_count,
-                                "勝敗": decision
+                                "投手名": p_name, "回": ip, "球数": total_pitches,
+                                "被安打": h_count, "被本": hr_count, "奪三振": k_count,
+                                "与四球": bb_count, "与死球": hbp_count, "WP": wp_count,
+                                "失点": r_count, "自責点": er_count, "勝敗": decision
                             })
 
                         if pitching_data:
@@ -504,17 +566,29 @@ def show():
 # ■タブ表示
 
                 user_role = st.session_state.get('user_role', 'guest')
-                tab_list = ["先攻Score", "後攻Score", "📝 戦評"]
+
+                if is_batting_first == 0:
+                    top_tab_label = f"🏏 {my_team_name} (先攻)"
+                    bottom_tab_label = f"⚾ {opp_team_name} (後攻)"
+                else:
+                    top_tab_label = f"⚾ {opp_team_name} (先攻)"
+                    bottom_tab_label = f"🏏 {my_team_name} (後攻)"
+
+                tab_list = [top_tab_label, bottom_tab_label, "📝 戦評"]
                 if user_role == "admin":
                     tab_list.append("⚠️ 管理")
                 
                 tabs = st.tabs(tab_list)
                 
                 with tabs[0]:
+                    st.write(f"### 📋 {top_tab_label} の成績")
                     render_inning_score_table("表")                
                 with tabs[1]:
+                    st.write(f"### 📋 {bottom_tab_label} の成績")
                     render_inning_score_table("裏")
+                
                 with tabs[2]:
+                    # --- 戦評セクション (既存ロジック維持) ---
                     can_edit = user_role in ['operator', 'admin']
                     comment = db.get_game_comment(g_id, club_id) or ""
 
@@ -545,62 +619,76 @@ def show():
                 if user_role == "admin":
                     with tabs[3]:
                         st.subheader("⚙️ 試合データの個別削除")
-                        st.error(f"【警告】試合ID: {g_id} の全データを削除します。この操作は取り消せません。")
+                        # 削除用IDのクリーンアップ (no_ を除去してDB整合性を保つ)
+                        clean_id = g_id.replace("no_", "") if g_id.startswith("no_") else g_id
+                        
+                        st.error(f"【警告】試合ID: {clean_id} の全データを削除します。この操作は取り消せません。")
                         
                         st.markdown(f"""
                         **削除対象となるデータ:**
-                        * 試合基本情報 (ID: {g_id})
-                        * この試合に紐づく **Core.cct 同期ログすべて**
+                        * 試合基本情報 (ID: {clean_id})
+                        * この試合に紐づく **詳細成績・同期ログすべて**
                         * この試合に登録された **戦評**
                         """)
                         
                         confirm = st.checkbox("この試合の全データ削除を承認します", key=f"del_chk_{g_id}")
                         
                         if st.button("🗑️ この試合を完全に削除", key=f"del_btn_{g_id}", disabled=not confirm, type="primary"):
-                            if db.delete_game_full(g_id, club_id):
-                                st.success(f"試合 {g_id} のデータを完全に削除しました。一覧に戻ります。")
+                            if db.delete_game_full(clean_id, club_id):
+                                st.success(f"試合 {clean_id} のデータを完全に削除しました。一覧に戻ります。")
                                 st.rerun()
                             else:
-                                st.error("削除処理に失敗しました。")
+                                st.error("削除処理に失敗しました。データベース管理者へ確認してください。")
 
         st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
 
 # ■投手勝敗判定
 
-def get_all_pitcher_decisions(is_top_flag, my_score, opp_score, target_side, pitcher_order, pitcher_stats):
+def get_all_pitcher_decisions(is_batting_first, my_score, opp_score, target_side, pitcher_order, pitcher_stats):
+    """
+    固定フラグ方式 (0:先攻, 1:後攻) に基づき、表示中のサイド(target_side)の投手の勝敗を判定。
+    """
     results = {p: "-" for p in pitcher_order}
     if not pitcher_order:
         return results
 
-    is_my_team_top = (is_top_flag == 0)
-    if is_my_team_top:
+    # 先攻・後攻のスコアを確定
+    # 0なら自チームが先攻(top)、1なら自チームが後攻(bottom)
+    if is_batting_first == 0:
         top_total, bottom_total = my_score, opp_score
     else:
         top_total, bottom_total = opp_score, my_score
 
+    # 現在表示している「守備側（投手側）」が勝ったか負けたかを判定
     if target_side == "表":
-        team_won_display = (bottom_total < top_total)
-        team_lost_display = (bottom_total > top_total)
-        side_total_score = bottom_total
+        # 「表」の投手＝後攻チームの投手（ホームチーム）
+        defense_team_won = (bottom_total > top_total)
+        defense_team_lost = (bottom_total < top_total)
+        opponent_score = top_total  # 相手(先攻)の得点
     else:
-        team_won_display = (top_total < bottom_total)
-        team_lost_display = (top_total > bottom_total)
-        side_total_score = top_total
+        # 「裏」の投手＝先攻チームの投手（ビジターチーム）
+        defense_team_won = (top_total > bottom_total)
+        defense_team_lost = (top_total < bottom_total)
+        opponent_score = bottom_total  # 相手(後攻)の得点
 
+    # --- 簡易判定ロジック ---
     if len(pitcher_order) == 1:
         p_name = pitcher_order[0]
-        if team_won_display: results[p_name] = "勝利"
-        elif team_lost_display: results[p_name] = "敗戦"
+        if defense_team_won: results[p_name] = "勝利"
+        elif defense_team_lost: results[p_name] = "敗戦"
     else:
+        # 継投の場合
         starter = pitcher_order[0]
         others = pitcher_order[1:]
 
-        if team_won_display and pitcher_stats[starter]["失点"] < side_total_score:
+        # 先発が勝ったか負けたかの簡易ロジック（本来の野球規則より簡略化）
+        if defense_team_won and pitcher_stats[starter]["失点"] < opponent_score:
             results[starter] = "勝利"
-        elif team_lost_display and pitcher_stats[starter]["失点"] > side_total_score:
+        elif defense_team_lost and pitcher_stats[starter]["失点"] > opponent_score:
             results[starter] = "敗戦"
-        elif team_lost_display and pitcher_stats[starter]["失点"] < side_total_score and others:
+        elif defense_team_lost and others:
+            # 先発が負けてないのにチームが負けた場合、失点が最も多いリリーフを敗戦とする（簡易的）
             worst_reliever = max(others, key=lambda p: pitcher_stats[p]["失点"])
             results[worst_reliever] = "敗戦"
 
