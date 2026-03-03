@@ -18,6 +18,28 @@ import database
 # 　　  基礎 
 # ----------------—
 
+# ■先攻後攻フラグ管理
+
+SENKO = 0  
+KOKO = 1
+MITEI = 2   
+
+def is_now_offense():
+    gp = st.session_state.get("game_progress", {})
+    batting_order_flag = st.session_state.get("is_batting_first", MITEI)
+
+    if batting_order_flag == MITEI:
+        return True
+    is_top = (gp.get("top_bottom") == "表")
+    
+    if batting_order_flag == SENKO:
+        return is_top 
+    else:
+        return not is_top 
+
+
+# ■ユーティリティ
+
 def go_to(page_name):
     st.session_state.mobile_page = page_name
     set_main_nav_fixed()
@@ -50,19 +72,27 @@ def get_mobile_db():
 # 時系列保存の要
 def record_play_event(event_type, value, is_out=False, meta=None):
     gp = st.session_state.get("game_progress", {})
+    offense_now = is_now_offense()
+    
     log_entry = {
         "event_no": len(st.session_state.play_log) + 1,
         "inning": gp.get("inning", 1),
         "top_bottom": gp.get("top_bottom", "表"),
-        "is_offense": gp.get("is_offense", True),
+        "is_offense": offense_now, 
         "event_type": event_type,  
         "value": value,            
         "is_out": is_out,          
-        "batter_idx": st.session_state.current_batter_idx if gp.get("is_offense") else st.session_state.opponent_batter_idx,
+        "batter_idx": (
+            st.session_state.get("current_batter_idx", 0) if offense_now 
+            else st.session_state.get("opponent_batter_idx", 0)
+        ),
         "runners_before": copy.deepcopy(gp.get("runners", {1: None, 2: None, 3: None})),
         "count_before": copy.deepcopy(st.session_state.get("count", {"B":0, "S":0, "O":0})),
         "meta": meta or {}
     }
+
+    if "play_log" not in st.session_state:
+        st.session_state.play_log = []
     st.session_state.play_log.append(log_entry)
     
 # アウトカウント集計器
@@ -70,6 +100,7 @@ def get_current_outs_from_log():
     gp = st.session_state.get("game_progress", {})
     inn = gp.get("inning")
     tb = gp.get("top_bottom")
+    logs = st.session_state.get("play_log", [])
     return sum(1 for log in st.session_state.play_log 
                if log["inning"] == inn and log["top_bottom"] == tb and log["is_out"])
 
@@ -82,31 +113,25 @@ def init_mobile_session():
         if st.session_state.get("club_id") and not st.session_state.get("authenticated"):
             st.session_state.authenticated = True
 
-    # 先攻後攻フラグ
     if "is_batting_first" not in st.session_state:
-        st.session_state.is_batting_first = True
+        st.session_state.is_batting_first = SENKO
 
-    # 試合進行データの初期化
-    current_status = st.session_state.get("game_status")
-    
-    if current_status is None or isinstance(current_status, str):
-        prev_label = current_status if isinstance(current_status, str) else "setting"
-        
-        st.session_state.game_status = {
+    if "game_progress" not in st.session_state or not isinstance(st.session_state.game_progress, dict):
+        initial_is_offense = (st.session_state.is_batting_first == SENKO)
+
+        st.session_state.game_progress = {
             "inning": 1, 
             "top_bottom": "表", 
-            "is_offense": True,
+            "is_offense": initial_is_offense, 
             "runners": {1: None, 2: None, 3: None}, 
             "runs": 0, 
             "opponent_runs": 0,
             "handicap_top": 0, 
             "handicap_btm": 0, 
-            "is_finished": False,
-            "status_label": prev_label
+            "is_finished": False
         }
-    
-    if st.session_state.get("game_progress") is None or not isinstance(st.session_state.game_progress, dict):
-        st.session_state.game_progress = st.session_state.game_status
+
+    st.session_state.game_status = st.session_state.game_progress
 
     if "count" not in st.session_state:
         st.session_state.count = {"B": 0, "S": 0, "O": 0}
@@ -130,6 +155,9 @@ def init_mobile_session():
         st.session_state.game_setup = {}
     if "mobile_page" not in st.session_state:
         st.session_state.mobile_page = "top"
+
+
+# ■Undo-----------------------
 
 def push_undo_state():
     if "undo_stack" not in st.session_state:
@@ -227,6 +255,7 @@ def save_game_state_to_db():
         return False
     try:
         progress_data = {
+            "is_batting_first": st.session_state.get("is_batting_first", SENKO), 
             "game_status_str": st.session_state.get("game_status", "playing"),
             "game_progress_dict": st.session_state.get("game_progress", {}),
             "count": st.session_state.get("count", {"B": 0, "S": 0, "O": 0}),
@@ -269,29 +298,28 @@ def load_game_state_from_db(slot_id):
             st.warning(f"スロット {slot_id} にデータが見つかりません。")
             return
 
-        # --- 2. データの展開 ---
         setup = data.get("setup", {})
         order_json = data.get("order", {})
         progress = order_json.get("progress", {})
-        
-        # 3. チーム基本情報・日付の明示的更新 (レシート不具合の核心)
+
         st.session_state.game_setup = setup
+        saved_flag = progress.get("is_batting_first")
+        if saved_flag is not None:
+            st.session_state.is_batting_first = saved_flag
+        else:
+            old_bool = setup.get("is_batting_first")
+            st.session_state.is_batting_first = SENKO if old_bool is True else KOKO
+
         st.session_state.my_team_name = setup.get("my_team", "自チーム")
         st.session_state.opponent_team_name = setup.get("opponent", "相手チーム")
         st.session_state.game_date = setup.get("date", "")
-        
-        # 4. オーダー・ログ系の復元
         st.session_state.mobile_order = order_json.get("my", [])
         st.session_state.opp_mobile_order = order_json.get("opp", [])
         st.session_state.play_log = progress.get("play_log", [])
         st.session_state.game_progress = progress.get("game_progress_dict", {})
-        
-        # カウント情報の復旧
         st.session_state.count = progress.get("count", {"B": 0, "S": 0, "O": 0})
         if "get_current_outs_from_log" in globals():
             st.session_state.count["O"] = get_current_outs_from_log()
-            
-        # インデックス・履歴系の復旧
         st.session_state.current_batter_idx = progress.get("current_batter_idx", 0)
         st.session_state.opponent_batter_idx = progress.get("opponent_batter_idx", 0)
         st.session_state.at_bat_history = progress.get("at_bat_history", [])
@@ -299,7 +327,6 @@ def load_game_state_from_db(slot_id):
         st.session_state.opponent_players = progress.get("opponent_players", [[] for _ in range(9)])
         st.session_state.opp_pitcher_info = progress.get("opp_pitcher_info", {"name": "", "no": "", "type": "ウィンドミル", "hand": "右投げ"})
         st.session_state.current_at_bat_counts = progress.get("current_at_bat_counts", [])
-        
         st.session_state.current_game_id = slot_id
         
     except Exception as e:
@@ -422,32 +449,25 @@ def show_top_menu():
             if c_main.button(f"＋ 新規作成", key=f"slot_new_{i}", use_container_width=True):
                 st.session_state.current_game_id = i
                 
-                st.session_state.play_log = []
-                st.session_state.active_game_order = []
-                st.session_state.at_bat_history = []
-                st.session_state.mobile_at_bat_logs = []
-                st.session_state.mobile_order = []
-                st.session_state.opp_mobile_order = []
-                st.session_state.game_progress = {
-                    "inning": 1, "top_bottom": "表", "is_offense": True,
-                    "runners": {1: None, 2: None, 3: None}, "runs": 0, "opponent_runs": 0,
-                    "is_finished": False
-                }
-                st.session_state.count = {"B": 0, "S": 0, "O": 0}
-                st.session_state.current_batter_idx = 0
-                st.session_state.opponent_batter_idx = 0
-                st.session_state.current_at_bat_counts = []
-                st.session_state.my_team_name = ""
-                st.session_state.opponent_team_name = ""
+                for key in ["play_log", "active_game_order", "at_bat_history", "mobile_at_bat_logs", 
+                            "mobile_order", "opp_mobile_order", "game_progress", "game_status"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
                 
+                init_mobile_session()
+
                 from datetime import date as dt_date
                 st.session_state.game_setup = {
                     "date": str(dt_date.today()), 
                     "opponent": "", 
                     "my_team": "", 
                     "opp_batter_count": 9,
-                    "name": "" 
+                    "is_batting_first": MITEI 
                 }
+
+                st.session_state.my_team_name = ""
+                st.session_state.opponent_team_name = ""
+
                 st.session_state.mobile_page = "setup"
                 st.rerun()
 
@@ -503,6 +523,53 @@ def show_game_setup():
         if not g_name.strip() or not opponent.strip():
             st.error("「大会名」と「相手チーム名」は必須項目です。入力してください。")
             return
+
+def show_game_setup():
+
+    st.markdown("### 🏟️ 試合設定")    
+    slot_id = st.session_state.get("current_game_id")
+    club_id = st.session_state.get("club_id")    
+    if not slot_id or not club_id:
+        if st.button("🏠 トップへ"):
+            go_to("top")
+        return
+    st.info(f"📍 スロット {slot_id:02} を編集中")    
+
+    team_list = db.get_team_names(club_id)
+    if "その他" in team_list: team_list.remove("その他")
+    team_list.append("その他")    
+    if "game_setup" not in st.session_state or st.session_state.game_setup is None:
+        st.session_state.game_setup = {}        
+    gs = st.session_state.game_setup    
+    with st.container(border=True):
+        try:
+            default_date = date.today()
+            if gs.get('date'):
+                default_date = date.fromisoformat(gs.get('date'))
+        except:
+            default_date = date.today()
+            
+        g_date = st.date_input("試合日", value=default_date)
+        g_name = st.text_input("大会名", value=gs.get('name', ''), placeholder="必須入力です")
+        opponent = st.text_input("相手チーム名", value=gs.get('opponent', ''), placeholder="必須入力です")
+        
+        my_team_val = gs.get('my_team', team_list[0])
+        try:
+            default_idx = 0
+            for idx, t in enumerate(team_list):
+                if str(t).strip() == str(my_team_val).strip():
+                    default_idx = idx
+                    break
+        except:
+            default_idx = 0            
+        my_team = st.selectbox("自チームを選択", team_list, index=default_idx)        
+    
+    if st.button("次へ (設定を保存) ➡️", use_container_width=True, type="primary"):
+        if not g_name.strip() or not opponent.strip():
+            st.error("「大会名」と「相手チーム名」は必須項目です。入力してください。")
+            return
+
+        current_flag = gs.get("is_batting_first", MITEI)
         st.session_state.game_setup = {
             "date": str(g_date), 
             "name": g_name, 
@@ -511,20 +578,21 @@ def show_game_setup():
             "opp_batter_count": gs.get('opp_batter_count', 9),
             "opponent_pitcher": gs.get("opponent_pitcher", "Unknown"),
             "p_handed": gs.get("p_handed", "R"),
-            "p_style": gs.get("p_style", "Windmill")
+            "p_style": gs.get("p_style", "Windmill"),
+            "is_batting_first": current_flag 
         }
 
         if "mobile_order" not in st.session_state or not st.session_state.mobile_order:
-            st.session_state.mobile_order = [{"name": "(未選択)", "pos": "---"} for _ in range(9)]
+            st.session_state.mobile_order = [{"name": "(未選択)", "pos": "---"} for _ in range(15)]
 
         if "game_progress" not in st.session_state:
             st.session_state.game_progress = {
                 "inning": 1,
                 "top_bottom": "表",
-                "outs": 0,
-                "score_my": 0,
-                "score_opp": 0,
-                "runners": {"1B": None, "2B": None, "3B": None},
+                "is_offense": True, 
+                "runners": {1: None, 2: None, 3: None}, 
+                "runs": 0,
+                "opponent_runs": 0,
                 "is_finished": False
             }
         
@@ -536,6 +604,7 @@ def show_game_setup():
 
 
 def show_order_setup():
+
     st.markdown("### 📋 オーダー設定")
     slot_id = st.session_state.get("current_game_id")
     if not slot_id:
@@ -617,9 +686,8 @@ def show_order_setup():
                     st.warning("自チームのオーダーを9名以上入力してください。")
                 else:
                     sync_order_state()
-                    # 攻撃順序フラグを固定
-                    st.session_state.is_batting_first = True 
-                    # start_game内でinning=1, top_bottom="表"がセットされる想定
+                    st.session_state.is_batting_first = SENKO
+                    st.session_state.game_setup['is_batting_first'] = SENKO
                     start_game(is_offense_start=True)
                     st.rerun()
 
@@ -629,9 +697,8 @@ def show_order_setup():
                     st.warning("自チームのオーダーを9名以上入力してください。")
                 else:
                     sync_order_state()
-                    # 攻撃順序フラグを固定
-                    st.session_state.is_batting_first = False
-                    # start_game内でinning=1, top_bottom="裏"がセットされる想定
+                    st.session_state.is_batting_first = KOKO
+                    st.session_state.game_setup['is_batting_first'] = KOKO
                     start_game(is_offense_start=False)
                     st.rerun()
     
@@ -641,12 +708,13 @@ def show_order_setup():
 def start_game(is_offense_start):
 
     gs = st.session_state.get("game_setup", {})
-    opp_count = gs.get('opp_batter_count', 9)
+    batting_first = gs.get("is_batting_first", SENKO if is_offense_start else KOKO)
 
     st.session_state.active_game_order = [
         [{"name": p["name"], "pos": p["pos"], "no": "", "start_at_bat_idx": 1}] 
-        for p in st.session_state.mobile_order if p["name"] != "(未選択)"
+        for p in st.session_state.mobile_order if p["name"] not in ["(未選択)", ""]
     ]
+
     st.session_state.opponent_players = [
         [{"name": p["name"], "no": "", "pos": p["pos"], "start_at_bat_idx": 1}] 
         for p in st.session_state.opp_mobile_order
@@ -657,24 +725,23 @@ def start_game(is_offense_start):
     st.session_state.at_bat_history = []
     st.session_state.play_log = [] 
     st.session_state.count = {"B":0, "S":0, "O":0}
-    
+
     init_progress = {
         "inning": 1, 
         "top_bottom": "表", 
-        "is_offense": is_offense_start, 
+        "is_offense": (batting_first == SENKO), 
         "runners": {1: None, 2: None, 3: None}, 
         "runs": 0, 
         "opponent_runs": 0, 
-        "handicap_top": 0, 
-        "handicap_btm": 0, 
         "is_finished": False
     }
     st.session_state.game_progress = init_progress
-    
-    record_play_event("game_start", f"試合開始: {'先攻' if is_offense_start else '後攻'}")
+
+    side_text = "先攻(自チーム攻撃から)" if batting_first == SENKO else "後攻(相手チーム攻撃から)"
+    record_play_event("game_start", f"試合開始: {side_text}")
     
     save_game_state_to_db()
-    go_to("playball")
+    st.session_state.mobile_page = "playball"
 
 
 
@@ -685,6 +752,7 @@ def start_game(is_offense_start):
 # ■インターフェース------------------------
 
 def show_playball():
+
     gp = st.session_state.get("game_progress", {})
     if not isinstance(gp, dict):
         st.error("データ構造に不整合が発生しました。トップに戻ってください。")
@@ -695,15 +763,15 @@ def show_playball():
     setup = st.session_state.get("game_setup", {})
     my_team = setup.get("my_team", "自チーム")
     opp_team = setup.get("opponent", "相手")
-    
-    is_batting_first = st.session_state.get("is_batting_first", True) 
+
+    flag = setup.get("is_batting_first", SENKO)
     tb = gp.get("top_bottom", "表")
     inning = gp.get("inning", 1)
 
-    is_my_offense = (is_batting_first and tb == "表") or (not is_batting_first and tb == "裏")
-    
-    top_team_name = my_team if is_batting_first else opp_team
-    btm_team_name = opp_team if is_batting_first else my_team
+    is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
+
+    top_team_name = my_team if flag == SENKO else opp_team
+    btm_team_name = opp_team if flag == SENKO else my_team
 
     max_inn = max(7, inning)
     score_table = {"表": {i: 0 for i in range(1, max_inn + 1)}, "裏": {i: 0 for i in range(1, max_inn + 1)}}
@@ -712,34 +780,29 @@ def show_playball():
     for h in hist:
         h_tb = h.get("top_bottom", "表")
         h_inn = h.get("inning", 1)
-        
+
         event_runs = h.get("runs", 0) or h.get("rbi", 0) or len(h.get("scorers", []))
         score_table[h_tb][h_inn] = score_table[h_tb].get(h_inn, 0) + event_runs
-        
+
         res = str(h.get("value", "")) + str(h.get("result", ""))
         if any(x in res for x in ["安打", "単打", "二塁打", "三塁打", "本塁打", "H", "HR"]): 
             stats[h_tb]["H"] += 1
         if any(x in res for x in ["失策", "E"]): 
             stats[h_tb]["E"] += 1
-    
+
     h_top = gp.get("handicap_top", 0)
     h_btm = gp.get("handicap_btm", 0)
     
     r_top = sum(score_table["表"].values()) + h_top
     r_btm = sum(score_table["裏"].values()) + h_btm
-    
-    is_first = st.session_state.get("is_batting_first", True)
-    st.session_state.game_progress["score_my"] = r_top if is_first else r_btm
-    st.session_state.game_progress["score_opp"] = r_btm if is_first else r_top
-    
-    # スコアボード
+
+    st.session_state.game_progress["score_my"] = r_top if flag == SENKO else r_btm
+    st.session_state.game_progress["score_opp"] = r_btm if flag == SENKO else r_top
+
     inn_headers = "".join([f'<th>{i}</th>' for i in range(1, max_inn + 1)])
     top_scores = "".join([f'<td>{score_table["表"][i]}</td>' for i in range(1, max_inn + 1)])
     btm_scores = "".join([f'<td>{score_table["裏"][i]}</td>' for i in range(1, max_inn + 1)])
     
-    r_top = sum(score_table["表"].values()) + h_top
-    r_btm = sum(score_table["裏"].values()) + h_btm
-
     offense_mark_top = "◀" if tb == "表" else ""
     offense_mark_btm = "◀" if tb == "裏" else ""
 
@@ -789,7 +852,17 @@ def show_playball():
         st.button(get_current_pitcher(), key="btn_p", use_container_width=True, 
                   on_click=lambda: go_to("opp_pitcher_edit") if is_my_offense else go_to("defense_sub"))
         
-        st.button(get_current_batter_name(), key="btn_b", use_container_width=True, on_click=lambda: go_to("pinch_hitter"))
+        c_idx = gp.get("batter_idx" if is_my_offense else "opp_batter_idx", 0)
+
+        st.button(
+            get_current_batter_name(), 
+            key="btn_b", 
+            use_container_width=True, 
+            on_click=lambda i=c_idx: (
+                st.session_state.__setitem__("tmp_pinch_hitter_idx", i), # 番号をカバンに詰める
+                go_to("pinch_hitter") # それから画面を飛ばす
+            )
+        )
         
         c = st.session_state.count
         st.markdown(f"""
@@ -799,14 +872,109 @@ def show_playball():
         """, unsafe_allow_html=True)
     
     with col_m:
-        st.markdown(f"""
-        <div class='diamond-container'>
-          <div class='base {'base-occupied' if r2 else ''}' style='top:20px; left:74px;'>2</div>
-          <div class='base {'base-occupied' if r3 else ''}' style='top:84px; left:20px;'>3</div>
-          <div class='base {'base-occupied' if r1 else ''}' style='top:84px; right:20px;'>1</div>
-          <div class='base' style='bottom:20px; left:84px;'>H</div>
-        </div>
+        st.markdown("""
+        <style>
+        .diamond-stage {
+            width: 100%;
+            max-width: 240px;
+            height: 240px;
+            margin: 10px auto;
+            background-color: #567d46;
+            border-radius: 50% 50% 5px 5px; 
+            position: relative;
+            box-shadow: inset 0 0 15px rgba(0,0,0,0.4);
+            overflow: hidden;
+            border: 2px solid #8e6e46;
+        }
+        .foul-line-1st {
+            width: 4px; 
+            height: 180px; 
+            background-color: #ffffff;
+            position: absolute;
+            bottom: 15px; 
+            left: 50%; 
+            transform: rotate(-45deg); 
+            transform-origin: bottom center; 
+            z-index: 5;
+        }
+        .foul-line-3rd {
+            width: 4px;
+            height: 180px;
+            background-color: #ffffff;
+            position: absolute;
+            bottom: 15px;
+            right: 50%;
+            transform: rotate(45deg); 
+            transform-origin: bottom center;
+            z-index: 5;
+        }
+        .infield-dirt {
+            width: 160%;
+            height: 160%;
+            background: radial-gradient(circle, #c19a6b 50%, #a07850 100%);
+            position: absolute;
+            bottom: -80%; 
+            left: -30%;
+            border-radius: 50%;
+            z-index: 1;
+        }
+        .base {
+            width: 28px;
+            height: 28px;
+            background-color: #ffffff;
+            border: 1px solid #999;
+            position: absolute;
+            z-index: 10;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            color: #333;
+            font-size: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .square-base { transform: rotate(45deg); border-radius: 2px; }
+        .square-base span { transform: rotate(-45deg); }
+
+        .home-base {
+            width: 30px; 
+            height: 30px; 
+            background-color: #ffffff;
+            clip-path: polygon(0% 0%, 100% 0%, 100% 60%, 50% 100%, 0% 60%);
+            border: none; 
+            font-size: 14px;
+            transform: rotate(0deg);
+        }
+        
+        .base-occupied {
+            background: radial-gradient(circle, #ff4b4b 0%, #cc0000 100%) !important;
+            color: white !important;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 4px #ff4b4b; }
+            50% { box-shadow: 0 0 12px #ff4b4b; }
+            100% { box-shadow: 0 0 4px #ff4b4b; }
+        }
+        </style>
         """, unsafe_allow_html=True)
+
+        cls1 = 'base-occupied' if r1 else ''
+        cls2 = 'base-occupied' if r2 else ''
+        cls3 = 'base-occupied' if r3 else ''
+
+        html_diamond = f"""
+        <div class="diamond-stage">
+          <div class="infield-dirt"></div>
+          <div class="foul-line-1st"></div>
+          <div class="foul-line-3rd"></div>
+          <div class="base square-base {cls2}" style="top: 25px; left: calc(50% - 14px);"><span>2</span></div>
+          <div class="base square-base {cls3}" style="top: calc(50% - 14px); left: 20px;"><span>3</span></div>
+          <div class="base square-base {cls1}" style="top: calc(50% - 14px); right: 20px;"><span>1</span></div>
+          <div class="base home-base" style="bottom: 15px; left: calc(50% - 15px);">H</div>
+        </div>
+        """
+        st.markdown(html_diamond, unsafe_allow_html=True)
         
     with col_r:
         for b, r_name in [(3, r3), (2, r2), (1, r1)]:
@@ -820,14 +988,18 @@ def show_playball():
 # ■ボタンの挙動------------------------
 
 def render_action_panel():
+
     gp = st.session_state.get("game_progress", {})
     c = st.session_state.get("count", {"B": 0, "S": 0, "O": 0})
-    is_first = st.session_state.get("is_batting_first", True)
+    setup = st.session_state.get("game_setup", {})
+    flag = setup.get("is_batting_first", SENKO) 
     tb = gp.get("top_bottom", "表")
-    is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
+
+    is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
 
     st.divider()
     st.markdown(f"### {'🔥 自チーム攻撃中' if is_my_offense else '🛡️ 自チーム守備中'}")
+
 
     col1, col2, col3 = st.columns(3)
     
@@ -839,7 +1011,6 @@ def render_action_panel():
 
     if col2.button("🟡 空振り", use_container_width=True):
         push_undo_state()
-        # カウント加算や三振判定はすべてrecord_pitch内で完結させます
         record_pitch("空振り")
         save_game_state_to_db()
         st.rerun()
@@ -884,6 +1055,7 @@ def render_action_panel():
 
     if st.button("🚫 イニングを強制終了 (10点コールド等)", type="secondary", use_container_width=True):
         gp = st.session_state.get("game_progress", {})
+
         current_tb = gp.get("top_bottom", "表")
         if current_tb == "表":
             gp["top_bottom"] = "裏"
@@ -891,26 +1063,30 @@ def render_action_panel():
             gp["top_bottom"] = "表"
             gp["inning"] = gp.get("inning", 1) + 1
 
-        gp["outs"] = 0
-        gp["balls"] = 0
-        gp["strikes"] = 0
-        gp["runners"] = {1: None, 2: None, 3: None, "1B": None, "2B": None, "3B": None}
-        gp["pitch_count"] = 0
-        gp["active_page"] = "CHANGE"
+        clean_runners = {1: None, 2: None, 3: None}
+        new_count = {'B': 0, 'S': 0, 'O': 0}
 
-        if "count" in st.session_state:
-            st.session_state.count = {'B': 0, 'S': 0, 'O': 0}
+        gp.update({
+            "outs": 0,
+            "balls": 0,
+            "strikes": 0,
+            "runners": clean_runners,
+            "pitch_count": 0,
+            "active_page": "CHANGE"
+        })
 
+        st.session_state.count = new_count
+        st.session_state.runners = clean_runners
         st.session_state.outs = 0
         st.session_state.balls = 0
         st.session_state.strikes = 0
-        st.session_state.runners = {1: None, 2: None, 3: None, "1B": None, "2B": None, "3B": None}
         st.session_state.active_page = "CHANGE"
         st.session_state["game_progress"] = gp
+
         if "save_game_state_to_db" in globals():
             save_game_state_to_db()
             
-        st.success("次イニングへ遷移します。")
+        st.success("イニングを強制終了しました。攻守を交代します。")
         st.rerun()
     
     show_nav_buttons("order")
@@ -920,9 +1096,13 @@ def render_action_panel():
 
 def get_current_pitcher():
     gp = st.session_state.get("game_progress", {})
-    is_first = st.session_state.get("is_batting_first", True)
+    setup = st.session_state.get("game_setup", {})
+
+    flag = setup.get("is_batting_first", SENKO)
     tb = gp.get("top_bottom", "表")
-    is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
+
+    is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
+
     if not is_my_offense:
         active_order = st.session_state.get("active_game_order", [])
         for p_list in active_order:
@@ -936,11 +1116,12 @@ def get_current_pitcher():
         
         name = info.get("name")
         if not name:
-            setup = st.session_state.get("game_setup", {})
             name = setup.get("opp_pitcher_name", "相手投手")        
+        
         handed = info.get("handed", "?") # R/L
         style = info.get("style", "?")   # Windmill/Sling/Slow        
         style_short = {"Windmill": "W", "Sling": "S", "Slow": "SL"}.get(style, style)        
+        
         if name != "相手投手":
             return f"{name} ({handed}/{style_short})"
         else:
@@ -951,9 +1132,12 @@ def get_current_pitcher():
 
 def get_current_batter_name():
     gp = st.session_state.get("game_progress", {})
-    is_first = st.session_state.get("is_batting_first", True)
-    tb = gp.get("top_bottom", "表")    
-    is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
+    setup = st.session_state.get("game_setup", {})
+
+    flag = setup.get("is_batting_first", SENKO)
+    tb = gp.get("top_bottom", "表")
+    is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
+    
     if is_my_offense:
         b_idx = gp.get("batter_idx", 0)
         active_order = st.session_state.get("active_game_order", [])
@@ -968,12 +1152,20 @@ def get_current_batter_name():
         return f"相手打者{b_idx+1}"
 
 def get_name_by_idx(is_offense, idx):
+
     if is_offense:
         order = st.session_state.get("active_game_order", [])
+        if 0 <= idx < len(order):
+            latest_player = order[idx][-1]
+            return latest_player.get("name", "不明")
     else:
-        order = st.session_state.get("opponent_players", [])    
-    if 0 <= idx < len(order) and order[idx]:
-        return order[idx][-1]["name"]
+        opp_order = st.session_state.get("opponent_players", [])
+        if 0 <= idx < len(opp_order):
+            player_data = opp_order[idx]
+            if isinstance(player_data, list):
+                return player_data[-1].get("name", "不明")
+            return player_data.get("name", "不明")
+            
     return "不明"
 
 
@@ -983,45 +1175,44 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
     push_undo_state()
     if scorers is None: scorers = []
     gp = st.session_state.get("game_progress", {})
-    is_first = st.session_state.get("is_batting_first", True)
+    setup = st.session_state.get("game_setup", {})
+
+    flag = setup.get("is_batting_first", SENKO)
     tb = gp.get("top_bottom", "表")
+    is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
 
     current_out_snapshot = get_current_outs_from_log()
     current_score_my = gp.get('score_my', 0)
     current_score_opp = gp.get('score_opp', 0)
 
-    fix_data = st.session_state.get("runner_fix_data")
-    if fix_data and "runners" in fix_data:
-        start_runners_list = [str(r["original_base"]) for r in fix_data["runners"]]
-        start_runners_list.sort()
-        runners_at_start_str = ",".join(start_runners_list)
-    else:
-        r_start = gp.get("runners", {})
-        start_runners_list = [str(b) for b in [1, 2, 3] if r_start.get(str(b)) or r_start.get(b)]
-        runners_at_start_str = ",".join(start_runners_list)
+    r_start = gp.get("runners", {1: None, 2: None, 3: None})
+    runners = {1: r_start.get(1) or r_start.get("1"), 
+               2: r_start.get(2) or r_start.get("2"), 
+               3: r_start.get(3) or r_start.get("3")}
 
-    is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
-    r = gp.get("runners", {"1": None, "2": None, "3": None})
-    runners = {"1": r.get("1") or r.get(1), "2": r.get("2") or r.get(2), "3": r.get("3") or r.get(3)}
+    start_runners_list = [str(b) for b in [1, 2, 3] if runners.get(b)]
+    runners_at_start_str = ",".join(start_runners_list)
+
     batter_name = get_current_batter_name()
+
     if hit_bases > 0:
         if result in ["四球", "死球", "申告敬遠"]:
-            if runners["1"] and runners["2"] and runners["3"]:
-                scorers.append(runners["3"]); rbi += 1
-                runners["3"] = runners["2"]; runners["2"] = runners["1"]
-            elif runners["1"] and runners["2"]:
-                runners["3"] = runners["2"]; runners["2"] = runners["1"]
-            elif runners["1"]:
-                runners["2"] = runners["1"]
-            runners["1"] = batter_name
+            if runners[1] and runners[2] and runners[3]:
+                scorers.append(runners[3]); rbi += 1
+                runners[3] = runners[2]; runners[2] = runners[1]
+            elif runners[1] and runners[2]:
+                runners[3] = runners[2]; runners[2] = runners[1]
+            elif runners[1]:
+                runners[2] = runners[1]
+            runners[1] = batter_name
         elif hit_bases == 4: 
-            for runner in [runners["1"], runners["2"], runners["3"]]:
-                if runner: scorers.append(runner); rbi += 1
+            for b in [1, 2, 3]:
+                if runners[b]: scorers.append(runners[b]); rbi += 1
             scorers.append(batter_name); rbi += 1
-            runners = {"1": None, "2": None, "3": None}
-        else: # 通常の安打
-            base_key = str(hit_bases)
-            runners[base_key] = batter_name
+            runners = {1: None, 2: None, 3: None}
+        else: 
+            runners[hit_bases] = batter_name
+            
     gp["runners"] = runners
 
     score_to_add = len(scorers)
@@ -1037,6 +1228,7 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
     history = st.session_state.get("at_bat_history", [])
     current_inn = int(gp.get("inning", 1))
     c_idx = gp.get("batter_idx", 0) if is_my_offense else gp.get("opp_batter_idx", 0)    
+    
     same_inning_same_batter = [
         h for h in history if 
         int(h.get("inning", 0)) == current_inn and 
@@ -1044,6 +1236,7 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
         h.get("batter_idx") is not None and int(h.get("batter_idx")) == int(c_idx)
     ]
     current_at_bat_no = len(same_inning_same_batter) + 1
+
     error_meta = {}
     if not is_my_offense and "失" in result:
         pos_map = {"投":"1", "捕":"2", "一":"3", "二":"4", "三":"5", "遊":"6", "左":"7", "中":"8", "右":"9"}
@@ -1060,8 +1253,7 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
 
     opp_p_info = st.session_state.get("opp_pitcher_info", {})
     p_hand = opp_p_info.get("handed", "R") 
-    p_style = opp_p_info.get("style", "Windmill") 
-
+    p_style = opp_p_info.get("style", "Windmill")
 
     log_entry = {
         "inning": current_inn,
@@ -1074,13 +1266,11 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
         "player": batter_name,
         "batter_idx": c_idx,
         "result": result,
-
         "start_outs": current_out_snapshot,
         "start_runners": runners_at_start_str,
         "start_score_my": current_score_my,
         "start_score_opp": current_score_opp,
         "is_tb": gp.get("is_tiebreak", False), 
-
         "value": result,
         "rbi": rbi,
         "scorers": list(scorers),
@@ -1098,6 +1288,7 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
             **error_meta 
         }
     }
+
     if "play_log" not in st.session_state: st.session_state.play_log = []
     if "at_bat_history" not in st.session_state: st.session_state.at_bat_history = []
     st.session_state.play_log.append(log_entry)
@@ -1106,14 +1297,17 @@ def finish_at_bat(result, rbi=0, scorers=None, out=0, hit_bases=0, sb=0):
     st.session_state.count["B"] = 0
     st.session_state.count["S"] = 0
     st.session_state.current_at_bat_counts = []
+
     if is_my_offense:
         order_list = st.session_state.get("active_game_order", [])
         if order_list: gp["batter_idx"] = (int(gp.get("batter_idx", 0)) + 1) % len(order_list)
     else:
-        opp_list = st.session_state.get("opponent_players", [])
+        opp_list = st.session_state.get("opp_mobile_order", []) or st.session_state.get("opponent_players", [])
         if opp_list: gp["opp_batter_idx"] = (int(gp.get("opp_batter_idx", 0)) + 1) % len(opp_list)
+
     st.session_state.game_progress = gp
     save_game_state_to_db()
+
     if st.session_state.count["O"] < 3:
         go_to("playball")
     else:
@@ -1179,42 +1373,62 @@ def prepare_runner_adjustment(result_label, hit_bases=0, is_out=False, is_deadba
     push_undo_state()
     gp = st.session_state.get("game_progress", {})
     r = gp.get("runners", {})
-    current_runners = {1: r.get("1") or r.get(1), 2: r.get("2") or r.get(2), 3: r.get("3") or r.get(3)}    
+
+    current_runners = {1: r.get(1), 2: r.get(2), 3: r.get(3)}    
+    
     batter_name = get_current_batter_name()
+    batter_pred = "アウト" if is_out else "1塁セーフ"
+    if not is_out and hit_bases > 1:
+        batter_pred = f"{hit_bases}塁セーフ" if hit_bases < 4 else "本塁生還"
+
     fix_data = {
         "result_label": result_label,
         "runners": [],
-        "batter": {"name": batter_name, "predicted_status": "アウト" if is_out else "1塁セーフ"},
+        "batter": {"name": batter_name, "predicted_status": batter_pred},
         "is_out_at_bat": is_out
     }
+
     for b in [3, 2, 1]:
         name = current_runners.get(b)
         if name:
-            pred = f"{b}塁セーフ"
+            pred = f"{b}塁セーフ" 
             if hit_bases > 0:
                 t = b + hit_bases
                 pred = f"{t}塁セーフ" if t < 4 else "本塁生還"
             elif is_deadball or result_label in ["四球", "死球", "申告敬遠"]:
-                if b == 1: pred = "2塁セーフ"
-                elif b == 2: pred = "3塁セーフ" if current_runners.get(1) else "2塁セーフ"
-                elif b == 3: pred = "本塁生還" if (current_runners.get(1) and current_runners.get(2)) else "3塁セーフ"
-            fix_data["runners"].append({"original_base": b, "name": name, "predicted_status": pred})
+                if b == 1:
+                    pred = "2塁セーフ"
+                elif b == 2:
+                    pred = "3塁セーフ" if current_runners.get(1) else "2塁セーフ"
+                elif b == 3:
+                    pred = "本塁生還" if (current_runners.get(1) and current_runners.get(2)) else "3塁セーフ"
+            
+            fix_data["runners"].append({
+                "original_base": b, 
+                "name": name, 
+                "predicted_status": pred
+            })
+
     st.session_state.runner_fix_data = fix_data
     go_to("runner_fix")
-
 
 # ■走者操作（２）進塁実際------------------------
 
 def apply_runner_fix(data, results):
     gp = st.session_state.get("game_progress", {})
-    new_runners = {"1": None, "2": None, "3": None}
+
+    new_runners = {1: None, 2: None, 3: None}
     scorers = []
     total_outs = 0
     rbi = 0
+
     runner_names = {r['original_base']: r['name'] for r in data["runners"]}
+
     for b in [1, 2, 3]:
         res = results.get(f"runner_{b}")
-        if not res or "消える" in res: continue
+        if not res or "消える" in res:
+            continue
+            
         name = runner_names.get(b)
         if res == "アウト": 
             total_outs += 1
@@ -1222,12 +1436,14 @@ def apply_runner_fix(data, results):
             scorers.append(name)
             rbi += 1
         elif "塁セーフ" in res: 
-            new_runners[res[0]] = name
+            base_num = int(res[0])
+            new_runners[base_num] = name
+
     b_res = results.get("batter")
     final_res = data["result_label"]    
+    
     if "三振" in final_res and b_res == "1塁セーフ":
         final_res = "振り逃げ"
-        
         if "play_log" in st.session_state:
             for i in range(len(st.session_state.play_log) - 1, -1, -1):
                 log = st.session_state.play_log[i]
@@ -1235,17 +1451,22 @@ def apply_runner_fix(data, results):
                     if "meta" not in log: log["meta"] = {}
                     log["meta"]["is_strikeout_stat"] = True
                     break
+
     if b_res == "アウト": 
         total_outs += 1
     elif b_res == "本塁生還":
         scorers.append(data["batter"]["name"])
         rbi += 1
     elif "塁セーフ" in b_res: 
-        new_runners[b_res[0]] = data["batter"]["name"]
+        base_num = int(b_res[0])
+        new_runners[base_num] = data["batter"]["name"]
+
     if total_outs >= 2 and "併殺" not in final_res: 
         final_res += "(併殺)"
+
     gp["runners"] = new_runners
     st.session_state.game_progress = gp
+
     finish_at_bat(final_res, rbi=rbi, scorers=scorers, out=total_outs)
     st.session_state.runner_fix_data = None
 
@@ -1255,56 +1476,68 @@ def apply_runner_fix(data, results):
 def show_runner_fix():
     st.markdown("### 🏃 走者位置の最終確認")
     data = st.session_state.get("runner_fix_data")
+    
     if not data:
         st.warning("データがありません")
         st.button("戻る", on_click=lambda: go_to("playball"))
         return
+
     status_options = ["アウト", "1塁セーフ", "2塁セーフ", "3塁セーフ", "本塁生還"]
     user_results = {}
+
     for r in sorted(data["runners"], key=lambda x: x['original_base'], reverse=True):
+        pred = r.get("predicted_status", "1塁セーフ")
         user_results[f"runner_{r['original_base']}"] = st.radio(
             f"{r['original_base']}塁: {r['name']}", 
             status_options, 
-            index=status_options.index(r["predicted_status"]) if r["predicted_status"] in status_options else 1, 
+            index=status_options.index(pred) if pred in status_options else 1, 
             horizontal=True,
             key=f"fix_r_{r['original_base']}"
         )
+
     res_text = data.get("result_label", "")
-    if data.get("is_out_at_bat"):
-        b_idx = 0  
-    elif "失" in res_text:
-        b_idx = 1
-    elif "野" in res_text:
-        b_idx = 1
-    elif "本" in res_text:
-        b_idx = 4  
-    elif "三" in res_text:
-        b_idx = 3  
-    elif "二" in res_text:
-        b_idx = 2  
+    batter_pred = data.get("batter", {}).get("predicted_status", "")
+
+    if batter_pred in status_options:
+        b_idx = status_options.index(batter_pred)
     else:
-        b_idx = 1  
+        if data.get("is_out_at_bat"):
+            b_idx = 0  
+        elif any(x in res_text for x in ["本", "HR"]):
+            b_idx = 4  
+        elif "3" in res_text:
+            b_idx = 3  
+        elif "2" in res_text:
+            b_idx = 2  
+        elif any(x in res_text for x in ["安", "単", "一", "失", "野", "四", "死", "敬"]):
+            b_idx = 1  
+        else:
+            b_idx = 1  
+
     user_results["batter"] = st.radio(
-        f"打者: {data['batter']['name']} (判定: {res_text})", 
+        f"打者: {data['batter']['name']} (結果: {res_text})", 
         status_options, 
         index=b_idx, 
         horizontal=True,
         key="fix_batter"
     )
+
     if st.button("✅ 走者状況を確定", type="primary", use_container_width=True):
         apply_runner_fix(data, user_results)
         st.rerun()
-    st.info("※三振で打者走者1塁セーフを選択すると「振逃げ」になります。")
+        
+    st.info("※三振で打者走者1塁セーフを選択すると「振逃げ」として記録されます。")
 
 
 # ■走者操作（４）状況操作------------------------
 
 def show_runner_action():
-
     st.markdown("### 🏃 走者操作")
     gp = st.session_state.get("game_progress", {})
-    r = gp.get("runners", {"1": None, "2": None, "3": None})
-    runners = {1: r.get("1") or r.get(1), 2: r.get("2") or r.get(2), 3: r.get("3") or r.get(3)}
+    setup = st.session_state.get("game_setup", {})
+
+    r = gp.get("runners", {1: None, 2: None, 3: None})
+    runners = {1: r.get(1) or r.get("1"), 2: r.get(2) or r.get("2"), 3: r.get(3) or r.get("3")}
     
     active_bases = [b for b in [3, 2, 1] if runners.get(b)]
     
@@ -1337,17 +1570,24 @@ def show_runner_action():
     def process_runner(result_text, is_out=False, move_to=None, is_score=False, sb=0, cs=0):
         push_undo_state()
         tb = gp.get("top_bottom", "表")
-        is_first = st.session_state.get("is_batting_first", True)
-        is_my_offense = (is_first and tb == "表") or (not is_first and tb == "裏")
+        flag = setup.get("is_batting_first", SENKO)
+        is_my_offense = (flag == SENKO and tb == "表") or (flag == KOKO and tb == "裏")
 
         opp_p_info = st.session_state.get("opp_pitcher_info", {})
         p_hand = opp_p_info.get("handed", "R")
         p_style = opp_p_info.get("style", "Windmill")
 
-        target_idx = next((idx for idx, p_list in enumerate(st.session_state.active_game_order) 
-                           if p_list and normalize_player_name(p_list[-1]["name"]) == normalize_player_name(player)), None)
+        target_idx = None
+        player_sub_idx = 0
+        current_order = st.session_state.active_game_order if is_my_offense else st.session_state.opponent_players
+        
+        for i, p_list in enumerate(current_order):
+            if p_list and normalize_player_name(p_list[-1]["name"]) == normalize_player_name(player):
+                target_idx = i
+                player_sub_idx = len(p_list) - 1
+                break
 
-        rbi_earned = 1 if is_score else 0
+        rbi_earned = 0
         current_scorers = [player] if is_score else []
 
         log_entry = {
@@ -1358,8 +1598,8 @@ def show_runner_action():
             "p_hand": p_hand,
             "p_style": p_style,
             "batter_idx": target_idx,
+            "player_sub_idx": player_sub_idx,
             "player": player,           
-            "player_name": player,      
             "value": f"{player}:{result_text}",
             "result": result_text,
             "rbi": rbi_earned, 
@@ -1373,28 +1613,30 @@ def show_runner_action():
             "start_outs": st.session_state.count.get("O", 0),
             "start_runners": ",".join(sorted([str(k) for k, v in runners.items() if v])),
             "meta": {
+                "slot": target_idx,
+                "sub_idx": player_sub_idx,
                 "rbi": rbi_earned,
                 "sb": sb,
-                "p_hand": p_hand, 
-                "p_style": p_style, 
                 "scorers": current_scorers,
-                "score_snapshot": f"{gp.get('score_my', 0)}-{gp.get('score_opp', 0)}"
+                "score_snapshot": f"{gp.get('score_top', 0)}-{gp.get('score_bottom', 0)}"
             }
         }
 
         if "play_log" not in st.session_state: st.session_state.play_log = []
         if "at_bat_history" not in st.session_state: st.session_state.at_bat_history = []
-        
         st.session_state.play_log.append(log_entry)
         st.session_state.at_bat_history.append(log_entry)
 
-        gp["runners"][str(selected_base)] = None
+        gp["runners"][selected_base] = None
         
         if is_score:
             if is_my_offense: gp["score_my"] += 1
             else: gp["score_opp"] += 1
+            
+            if tb == "表": gp["score_top"] = gp.get("score_top", 0) + 1
+            else: gp["score_bottom"] = gp.get("score_bottom", 0) + 1
         elif move_to:
-            gp["runners"][str(move_to)] = player
+            gp["runners"][move_to] = player
         
         if is_out:
             st.session_state.count["O"] += 1
@@ -1434,15 +1676,9 @@ def show_runner_action():
         if st.button("走者死", use_container_width=True): process_runner("走者死", is_out=True)
 
     st.success("🔄 選手交代")
-    c9, c10 = st.columns(2)
-    with c9:
-        if st.button("臨時代走", use_container_width=True):
-            st.session_state.sub_runner_info = {"base": selected_base, "player": player, "type": "臨時代走"}
-            go_to("sub_runner")
-    with c10:
-        if st.button("代走", use_container_width=True):
-            st.session_state.sub_runner_info = {"base": selected_base, "player": player, "type": "代走"}
-            go_to("sub_runner")
+    if st.button("代走 (Pinch Runner)", use_container_width=True):
+        st.session_state.sub_runner_info = {"base": selected_base, "player": player, "type": "代走"}
+        go_to("sub_runner")
 
     st.divider()
     if st.button("✅ 戻る", use_container_width=True):
@@ -1456,17 +1692,20 @@ def show_runner_action():
 
 def show_change_display():
     gp = st.session_state.get("game_progress", {})
+    setup = st.session_state.get("game_setup", {})
+
     st.markdown(f"<div style='font-size: 24px; font-weight: bold; color: #ff4b4b; text-align: center; padding: 10px; border: 2px solid #ff4b4b; border-radius: 10px; margin-bottom: 20px;'>CHANGE !!</div>", unsafe_allow_html=True)
     st.markdown(f"<h2 style='text-align: center;'>{gp.get('inning', 1)}回{gp.get('top_bottom', '表')} 終了</h2>", unsafe_allow_html=True)
     st.divider()
-    
-    # 次のイニング
-    is_bat_first = st.session_state.get("is_batting_first", True)
+
+    flag = setup.get("is_batting_first", SENKO)
     current_tb = gp.get("top_bottom", "表")    
+    
     next_top_bottom = "裏" if current_tb == "表" else "表"
     next_inning = gp.get("inning", 1) if current_tb == "表" else gp.get("inning", 1) + 1
-    next_mode_is_offense = (is_bat_first and next_top_bottom == "表") or (not is_bat_first and next_top_bottom == "裏")
+    next_mode_is_offense = (flag == SENKO and next_top_bottom == "表") or (flag == KOKO and next_top_bottom == "裏")
     next_mode_str = "攻撃" if next_mode_is_offense else "守備"
+
     if next_mode_is_offense:
         next_bat_idx = gp.get("batter_idx", 0)
     else:
@@ -1476,70 +1715,86 @@ def show_change_display():
     
     st.info(f"次は {next_inning}回{next_top_bottom} （自チーム{next_mode_str}）です。")
     st.write(f"先頭打者: **{next_bat_idx + 1}番 {next_batter_name}**")
+
     
     # タイブレーク
     with st.expander("⚖️ タイブレーク設定（イニング開始時のランナー）"):
         tb_options = ["なし（通常）", "1・2塁から開始", "満塁から開始", "カスタム"]
         tb_type = st.radio("ランナー設定", tb_options, horizontal=True)
-        custom_runners = {"1": None, "2": None, "3": None}
-        
-        # 走者特定用
-        order_len = 9
+
+        custom_runners = {1: None, 2: None, 3: None}
+
         if next_mode_is_offense:
             order_len = len(st.session_state.get("active_game_order", [])) or 9
         else:
             order_len = len(st.session_state.get("opponent_players", [])) or 9
         
         if tb_type == "1・2塁から開始":
-            custom_runners["1"] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 1) % order_len)
-            custom_runners["2"] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 2) % order_len)
+            custom_runners[1] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 1) % order_len)
+            custom_runners[2] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 2) % order_len)
         elif tb_type == "満塁から開始":
-            custom_runners["1"] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 1) % order_len)
-            custom_runners["2"] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 2) % order_len)
-            custom_runners["3"] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 3) % order_len)
+            custom_runners[1] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 1) % order_len)
+            custom_runners[2] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 2) % order_len)
+            custom_runners[3] = get_name_by_idx(next_mode_is_offense, (next_bat_idx - 3) % order_len)
         elif tb_type == "カスタム":
             c1, c2, c3 = st.columns(3)
-            custom_runners["1"] = c1.text_input("1塁走者", key="tb_r1")
-            custom_runners["2"] = c2.text_input("2塁走者", key="tb_r2")
-            custom_runners["3"] = c3.text_input("3塁走者", key="tb_r3")
+            custom_runners[1] = c1.text_input("1塁走者", key="tb_r1")
+            custom_runners[2] = c2.text_input("2塁走者", key="tb_r2")
+            custom_runners[3] = c3.text_input("3塁走者", key="tb_r3")
 
     if st.button(f"次のイニングへ移行", type="primary", use_container_width=True):
         push_undo_state()
-        
+
         st.session_state.count = {"B": 0, "S": 0, "O": 0}
         st.session_state.current_at_bat_counts = []
+
         gp["top_bottom"] = next_top_bottom
         gp["inning"] = next_inning
         gp["runners"] = custom_runners
         gp["is_offense"] = next_mode_is_offense
+        
         st.session_state.game_progress = gp
+
         record_play_event("inning_start", f"{next_inning}回{next_top_bottom}", meta={"runners": custom_runners})        
         save_game_state_to_db()
+        
         go_to("playball")
         st.rerun()
 
     st.divider()
 
     if st.button("🏁 試合終了（ゲームセット）", use_container_width=True):
+
         push_undo_state()
+        setup = st.session_state.get("game_setup", {})
+        flag = setup.get("is_batting_first", SENKO)
+        current_tb = gp.get("top_bottom", "表")
+        
         gp["is_finished"] = True        
         gp["end_inning"] = gp.get("inning", 1)
-        gp["end_is_top"] = gp.get("is_top", True)
-        my_score = st.session_state.get("score_b", 0)  
-        opp_score = st.session_state.get("score_t", 0) 
-        if gp.get("is_top") is True and my_score > opp_score:
+        gp["end_top_bottom"] = current_tb # "表" または "裏"
+
+        top_score = gp.get("score_top", 0)
+        bottom_score = gp.get("score_bottom", 0)
+
+        if current_tb == "表" and bottom_score > top_score:
+            gp["is_bottom_x"] = True
+        elif current_tb == "裏" and bottom_score > top_score:
             gp["is_bottom_x"] = True
         else:
             gp["is_bottom_x"] = False
+            
         record_play_event("game_end", "試合終了")
+        
         st.session_state.game_progress = gp
         save_game_state_to_db() 
+
         go_to("score_sheet")
         st.rerun()
 
 
 # ---------------—-
-# 　　選手交代 
+# 　　選手交代
 # ----------------—
 
 # ■守備------------------------
@@ -1552,7 +1807,9 @@ def show_defense_sub():
     all_players_data = db.get_all_players(st.session_state.club_id)
     all_players_names = ["(未選択)"] + [p[1] for p in all_players_data]
     gp = st.session_state.get("game_progress", {})
-    
+
+    any_change = False
+
     for i, p_list in enumerate(order):
         c1, c2, c3 = st.columns([0.5, 1.5, 1])
         c1.markdown(f"<div class='number-label'>{i+1}</div>", unsafe_allow_html=True)
@@ -1563,98 +1820,93 @@ def show_defense_sub():
         
         new_name = c2.selectbox(f"交代_{i}", all_players_names, index=all_players_names.index(old_name) if old_name in all_players_names else 0, key=f"sub_n_{i}")
         new_pos = c3.selectbox(f"位置_{i}", pos_options, index=pos_options.index(old_pos) if old_pos in pos_options else 0, key=f"sub_p_{i}")
-        
+
         if new_name != old_name:
+            any_change = True
             p_no = next((ap[2] for ap in all_players_data if ap[1] == new_name), "")
             record_play_event("player_sub", f"{old_name} → {new_name}", meta={"slot": i, "pos": new_pos})            
+
+            runners = gp.get("runners", {})
+            for base in [1, 2, 3]:
+                if runners.get(base) == old_name:
+                    runners[base] = new_name
+            
             current_ab_idx = get_total_at_bats_for_order(True, i)
             order[i].append({
                 "name": new_name, "pos": new_pos, "no": p_no, 
                 "start_at_bat_idx": current_ab_idx + 1
             })
+
         elif new_pos != old_pos:
+            any_change = True
             latest["pos"] = new_pos
             record_play_event("pos_change", f"{old_name}: {new_pos}", meta={"player": old_name})
-            
+
     if st.button("変更を確定", use_container_width=True, type="primary"):
         st.session_state.active_game_order = order
+        st.session_state.game_progress = gp 
         save_game_state_to_db()
         go_to("playball")
+        st.rerun()
+
     show_nav_buttons("playball")
 
 
 # ■代打------------------------
 
-def get_total_at_bats_for_order(is_my_team, order_idx):
-
-    gp = st.session_state.get("game_progress", {})
-    events = gp.get("events", [])
-    
-    count = 0
-    target_team = "my" if is_my_team else "opp"
-    
-    for ev in events:
-        if ev.get("team") == target_team and ev.get("bat_idx") == order_idx:
-            count += 1
-            
-    return count
 def show_pinch_hitter():
     gp = st.session_state.get("game_progress", {})
-    is_offense = gp.get("is_offense", True)
-    st.markdown(f"### 🏃 {'自チーム' if is_offense else '相手チーム'} 代打の送り込み")
+    idx = st.session_state.get("tmp_pinch_hitter_idx", gp.get("batter_idx", 0))    
+    setup = st.session_state.get("game_setup", {})
     
-    if is_offense:
-        all_players_data = db.get_all_players(st.session_state.club_id)
-        players_list = ["(未選択)"] + [p[1] for p in all_players_data]
-        idx = st.session_state.current_batter_idx
+    flag = setup.get("is_batting_first", 0)
+    tb = gp.get("top_bottom", "表")
+    is_my_offense = (flag == 0 and tb == "表") or (flag == 1 and tb == "裏")    
+    st.markdown(f"### 🏃 {'自チーム' if is_my_offense else '相手チーム'} 代打")
+
+    if is_my_offense:
+        players_data = db.get_all_players(st.session_state.club_id)
+        names = ["(未選択)"] + [p[1] for p in players_data]
+
+        order_slot = st.session_state.active_game_order[idx]
+        old_player = order_slot[-1]
         
-        order_list = st.session_state.active_game_order[idx]
-        current_name = order_list[-1]["name"]
-        st.write(f"現在の打者: **{current_name}**")
+        new_p = st.selectbox(f"{idx+1}番 {old_player['name']} に代わる選手", names)
         
-        new_p = st.selectbox("代入する選手を選択", players_list)
-        
-        if st.button("代打確定", use_container_width=True, type="primary"):
+        if st.button("代打確定", type="primary", use_container_width=True):
             if new_p != "(未選択)":
-                current_ab_count = get_total_at_bats_for_order(True, idx)
+                start_idx = len(order_slot) 
+                p_no = next((p[2] for p in players_data if p[1] == new_p), "")
+
                 st.session_state.active_game_order[idx].append({
-                    "name": new_p, "pos": "代打", "no": "", "start_at_bat_idx": current_ab_count + 1
+                    "name": new_p, "pos": old_player['pos'], "no": p_no, 
+                    "start_at_bat_idx": start_idx, "is_pinch_hitter": True
                 })
-                st.session_state.pos_history.append({
-                    "inning": gp.get("inning", 1),
-                    "top_bottom": 1 if gp.get("top_bottom", "表") == "表" else 0,
-                    "player": current_name,
-                    "pos": f"代打 {new_p}"
-                })
+
+                record_play_event("pinch_hitter", f"代打: {old_player['name']} → {new_p}", meta={"slot": idx})
                 save_game_state_to_db()
-                st.success(f"{new_p} が代打として起用されました")
-                st.session_state.mobile_page = "playball"
+                go_to("playball")
                 st.rerun()
     else:
-        idx = st.session_state.opponent_batter_idx
-        latest_info = st.session_state.opponent_players[idx][-1]
-        latest_name = latest_info.get("name", "")
-        st.write(f"現在の打順: {idx + 1}番 ({latest_name if latest_name else '未設定'})")
-        
-        new_p = st.text_input("相手代打の名前を入力")
-        new_no = st.text_input("背番号 (任意)")
-        
-        if st.button("相手代打確定", use_container_width=True, type="primary"):
-            if new_p:
-                current_ab_count = get_total_at_bats_for_order(False, idx)
-                st.session_state.opponent_players[idx].append({
-                    "name": new_p, "no": new_no, "pos": "代打", "start_at_bat_idx": current_ab_count + 1
-                })
-                save_game_state_to_db()
-                st.success(f"相手代打: {new_p} が起用されました")
-                st.session_state.mobile_page = "playball"
-                st.rerun()
-    
-    st.write("---")
-    if st.button("キャンセル（戻る）", use_container_width=True):
-        st.session_state.mobile_page = "playball"
-        st.rerun()
+        opp_slot = st.session_state.opponent_players[idx]
+        old_player = opp_slot[-1]
 
+        new_name = st.text_input(f"{idx+1}番 {old_player.get('name','')} への代打名")
+
+        if st.button("相手代打確定", type="primary", use_container_width=True):
+            if new_name:
+                st.session_state.opponent_players[idx].append({
+                    "name": new_name, "pos": old_player.get('pos','---'), 
+                    "start_at_bat_idx": len(opp_slot), "is_pinch_hitter": True
+                })
+                record_play_event("pinch_hitter", f"相手代打: {old_player.get('name','')} → {new_name}", meta={"slot": idx})
+                save_game_state_to_db()
+                go_to("playball")
+                st.rerun()
+
+    if st.button("キャンセル"):
+        go_to("playball")
+        st.rerun()
 
 # ■代走------------------------
 
@@ -1669,40 +1921,80 @@ def show_sub_runner():
     st.write(f"現在の{info['base']}塁走者: **{info['player']}**")
     
     gp = st.session_state.get("game_progress", {})
+    setup = st.session_state.get("game_setup", {})
+
+    flag = setup.get("is_batting_first", 0)
+    tb = gp.get("top_bottom", "表")
+    is_my_offense = (flag == 0 and tb == "表") or (flag == 1 and tb == "裏")
+
     norm_current_runner = normalize_player_name(info['player'])
 
-    if gp.get("is_offense", False):
+    if is_my_offense:
         all_players_data = db.get_all_players(st.session_state.club_id)
         players_list = ["(選択してください)"] + [p[1] for p in all_players_data]
         new_runner_name = st.selectbox("代走に出る選手を選択", players_list)
         
         if st.button(f"{info['type']}を確定", type="primary", use_container_width=True):
             if new_runner_name != "(選択してください)":
-                gp["runners"][info["base"]] = new_runner_name
+                if "runner_sub_reserve" not in st.session_state:
+                    st.session_state.runner_sub_reserve = {}
+
+                st.session_state.runner_sub_reserve[info["base"]] = {
+                    "old_name": info['player'],
+                    "new_name": new_runner_name
+                }
+
                 if info["type"] == "代走":
                     order = st.session_state.active_game_order
                     for i, p_list in enumerate(order):
                         if p_list and normalize_player_name(p_list[-1]["name"]) == norm_current_runner:
-                            current_ab_count = get_total_at_bats_for_order(True, i)
-                            p_list.append({"name": new_runner_name, "pos": "走", "no": "", "start_at_bat_idx": current_ab_count + 1})
+                            current_batting_round = gp.get("batter_idx_in_rounds", [0]*9)[i]
+
+                            p_list.append({
+                                "name": new_runner_name, 
+                                "pos": "走", 
+                                "no": next((p[2] for p in all_players_data if p[1] == new_runner_name), ""), 
+                                "start_at_bat_idx": current_batting_round + 2, 
+                                "is_pinch_hitter": True,
+                                "pinch_at_round": current_batting_round + 1 
+                            })
+
+                            gp["runners"][info["base"]] = new_runner_name
+                            
+                            record_play_event("pinch_runner", f"代走: {info['player']} → {new_runner_name}", meta={"slot": i, "base": info["base"]})
                             break
+                            
                 save_game_state_to_db()
                 if "sub_runner_info" in st.session_state: del st.session_state.sub_runner_info
                 go_to("playball")
                 st.rerun()
     else:
+
         new_runner_name = st.text_input("相手代走の選手名を入力")
         new_runner_no = st.text_input("背番号")
+        
         if st.button(f"相手{info['type']}を確定", type="primary", use_container_width=True):
             if new_runner_name:
                 display_name = f"{new_runner_name} ({new_runner_no})" if new_runner_no else new_runner_name
-                gp["runners"][info["base"]] = display_name
+                
                 if info["type"] == "代走":
                     for i, p_list in enumerate(st.session_state.opponent_players):
                         if p_list and normalize_player_name(p_list[-1]["name"]) == norm_current_runner:
-                            current_ab_count = get_total_at_bats_for_order(False, i)
-                            p_list.append({"name": new_runner_name, "no": new_runner_no, "pos": "代走", "start_at_bat_idx": current_ab_count + 1})
+                            current_batting_round = gp.get("opp_batter_idx_in_rounds", [0]*9)[i]
+
+                            p_list.append({
+                                "name": new_runner_name, 
+                                "no": new_runner_no, 
+                                "pos": "代走", 
+                                "start_at_bat_idx": current_batting_round + 2,
+                                "is_pinch_hitter": True,
+                                "pinch_at_round": current_batting_round + 1
+                            })
+
+                            gp["runners"][info["base"]] = display_name
+                            record_play_event("pinch_runner", f"相手代走: {info['player']} → {new_runner_name}", meta={"slot": i, "base": info["base"]})
                             break
+                            
                 save_game_state_to_db()
                 if "sub_runner_info" in st.session_state: del st.session_state.sub_runner_info
                 go_to("playball")
@@ -1720,17 +2012,22 @@ def show_opp_pitcher_edit():
     st.markdown("### 投手交代 (相手チーム)")    
     info = st.session_state.get("opp_pitcher_info", {})
 
-    current_p = info.get("name", "相手投手")
-    current_h = info.get("handed", "R")
-    current_s = info.get("style", "Windmill")
+    current_p = info.get("name", "相手投手") 
+    current_h = info.get("handed", "未設定")
+    current_s = info.get("style", "未設定")
 
     with st.form("opp_p_form"):
-        new_p = st.text_input("相手投手名", value=current_p)
-        new_h = st.radio("投球腕", ["R", "L"], 
-                         index=0 if current_h == "R" else 1, 
-                         horizontal=True)
+        new_p = st.text_input("相手投手名 (空欄可)", value=current_p, placeholder="名前が不明な場合は空欄")
 
-        styles = ["Windmill", "Sling", "Slowpitch", "Overhand"]
+        hands = ["未設定", "R", "L"]
+        h_idx = hands.index(current_h) if current_h in hands else 0
+        new_h = st.radio("投球腕", hands, index=h_idx, horizontal=True)
+
+        styles = [
+            "未設定", 
+            "Windmill", "Sling", "Slowpitch", 
+            "Overhand", "Sidehand", "Underhand" 
+        ]
         style_idx = styles.index(current_s) if current_s in styles else 0
         new_s = st.selectbox("投球スタイル", styles, index=style_idx)
         
@@ -1740,24 +2037,27 @@ def show_opp_pitcher_edit():
 
         if submit:
             new_info = {
-                "name": new_p,
+                "name": new_p if new_p else "相手投手",
                 "handed": new_h,
                 "style": new_s
             }
             st.session_state["opp_pitcher_info"] = new_info
+
             if "game_setup" not in st.session_state:
                 st.session_state["game_setup"] = {}
-            st.session_state["game_setup"]["opponent_pitcher"] = new_p
+            st.session_state["game_setup"]["opponent_pitcher"] = new_info["name"]
             st.session_state["game_setup"]["p_handed"] = new_h
             st.session_state["game_setup"]["p_style"] = new_s
+            
             save_game_state_to_db()            
-            st.success(f"相手投手を {new_p} ({new_h}/{new_s}) に更新しました")
+            st.success(f"相手投手情報を更新しました: {new_info['name']}")
             go_to("playball")
             st.rerun()
         
         if cancel:
             go_to("playball")
             st.rerun()
+
 
 # ---------------—-
 # 　スコアシート 
@@ -1860,7 +2160,11 @@ def show_score_sheet():
                     if h.get("is_offense") == is_offense_view and 
                     (h.get("batter_idx") == slot["idx"] or h.get("meta", {}).get("batter_idx") == slot["idx"])
                 ]
-                p_rbi = sum(int(r.get("rbi", 0) or r.get("meta", {}).get("rbi", 0) or 0) for r in recs_for_stats)
+                p_rbi = sum(
+                    int(r.get("rbi", 0) or r.get("meta", {}).get("rbi", 0) or 0) 
+                    for r in recs_for_stats 
+                    if r.get("event_type") == "at_bat_result"
+                )
                 
                 p_runs = 0
                 for h in history:
@@ -1869,12 +2173,15 @@ def show_score_sheet():
                     if isinstance(sc_list, list):
                         if any(normalize_player_name(str(s)) == p_name_norm for s in sc_list):
                             p_runs += 1
-                
+
+
                 p_sb = 0
                 for h in recs_for_stats:
-                    val = h.get("sb", 0) or h.get("meta", {}).get("sb", 0)
-                    try: p_sb += int(val) if val else 0
-                    except: pass
+                    event_player = normalize_player_name(str(h.get("player") or h.get("meta", {}).get("player", "")))
+                    if event_player == p_name_norm:
+                        val = h.get("sb", 0) or h.get("meta", {}).get("sb", 0)
+                        try: p_sb += int(val) if val else 0
+                        except: pass
 
                 p_err = 0
                 for h in history:
@@ -1963,20 +2270,26 @@ def show_score_sheet():
     with c_save:
         if st.button("💾 中断セーブ", use_container_width=True):
             save_game_state_to_db(); st.toast("試合状態を保存しました")
+
     with c_fix:
         if st.button("✅ 試合を確定", use_container_width=True, type="primary"):
             push_undo_state()
             gp = st.session_state.game_progress            
-            gp["is_finished"] = True            
+            gp["is_finished"] = True 
+           
             if "end_inning" not in gp:
                 gp["end_inning"] = gp.get("inning", 1)
-                gp["end_is_top"] = gp.get("is_top", True)
-            my_score = st.session_state.get("score_b", 0)  # 裏（自チーム）
-            opp_score = st.session_state.get("score_t", 0) # 表（相手チーム）
-            if gp.get("end_is_top") is True and my_score > opp_score:
+                current_tb = gp.get("top_bottom", "表")
+                gp["end_is_top"] = (current_tb == "表")
+
+            score_t = gp.get("score_top", 0)
+            score_b = gp.get("score_bottom", 0)
+
+            if score_b > score_t:
                 gp["is_bottom_x"] = True
             else:
                 gp["is_bottom_x"] = False
+
             record_play_event("game_end", "試合確定(スコア画面)")
             st.session_state.game_progress = gp
             save_game_state_to_db() 
@@ -1991,12 +2304,28 @@ def show_score_sheet():
     if st.button("📄 スコアシートをPDF出力(A4)", use_container_width=True):
 
         def get_table_data(is_offense_view):
+
             rows = []
             history = st.session_state.get("at_bat_history", [])
             p_name_norm_func = normalize_player_name 
             
             pitch_map = {"S": "○", "K": "◎", "B": "●", "F": "ー", "X": ""}
             
+            actual_max_inn = 0
+            if history:
+                actual_max_inn = max([int(h.get("inning", 0)) for h in history])
+            pdf_max_inn = max(7, actual_max_inn)
+
+            col_definitions = []
+            current_global_idx = 1
+            for inn in range(1, pdf_max_inn + 1):
+                inn_recs = [h for h in history if h.get("inning") == inn and h.get("is_offense") == is_offense_view and (h.get("result") or h.get("value"))]
+                cycles = [int(h.get("at_bat_no", 1)) for h in inn_recs]
+                max_cycle = max(cycles) if cycles else 1
+                for ab_no in range(1, max_cycle + 1):
+                    col_definitions.append({"inn": inn, "ab_no": ab_no, "global_idx": current_global_idx})
+                    current_global_idx += 1
+
             if is_offense_view:
                 order_data = st.session_state.get("active_game_order", [[] for _ in range(9)])
             else:
@@ -2004,60 +2333,64 @@ def show_score_sheet():
 
             for idx, p_history in enumerate(order_data):
                 if not p_history:
-                    p_history = [{"name": f"選手{idx+1}", "no": "", "pos": "---"}]
+                    p_history = [{"name": f"選手{idx+1}", "no": "", "pos": "---", "start_at_bat_idx": 1}]
                 
-                for p_info in p_history:
+                for p_idx, p_info in enumerate(p_history):
+
+                    start_ab = p_info.get("start_at_bat_idx", 1)
+                    if p_idx + 1 < len(p_history):
+                        next_p = p_history[p_idx+1]
+                        end_ab = (next_p.get("start_at_bat_idx", 999) - 1)
+                    else:
+                        end_ab = 9999
+
                     p_name = p_info.get("name")
                     p_name_norm = p_name_norm_func(p_name)
-                    
-                    recs = [h for h in history if h.get("is_offense") == is_offense_view and 
-                            (h.get("batter_idx") == idx or h.get("meta", {}).get("batter_idx") == idx)]
+
+                    recs = [h for h in history if h.get("is_offense") == is_offense_view and (h.get("batter_idx") == idx or h.get("meta", {}).get("batter_idx") == idx)]
                     p_rbi = sum([int(r.get("rbi", 0) or r.get("meta", {}).get("rbi", 0)) for r in recs if str(r.get("rbi", 0)).isdigit() or str(r.get("meta", {}).get("rbi", 0)).isdigit()])
-                    
                     p_runs = 0
                     for h in history:
                         if h.get("is_offense") != is_offense_view: continue
                         sc_list = h.get("scorers") or h.get("meta", {}).get("scorers", [])
                         if any(p_name_norm_func(str(s)) == p_name_norm for s in sc_list): p_runs += 1
-
-                    p_sb = sum([int(h.get("sb", 0) or h.get("meta", {}).get("sb", 0)) for h in history 
-                                if p_name_norm_func(str(h.get("player") or h.get("player_name") or "")) == p_name_norm])
-
-                    p_err = sum([int(h.get("meta", {}).get("error", 0)) for h in history 
-                                 if p_name_norm_func(str(h.get("meta", {}).get("player", ""))) == p_name_norm])
+                    p_sb = sum([int(h.get("sb", 0) or h.get("meta", {}).get("sb", 0)) for h in history if p_name_norm_func(str(h.get("player") or h.get("player_name") or "")) == p_name_norm])
+                    p_err = sum([int(h.get("meta", {}).get("error", 0)) for h in history if p_name_norm_func(str(h.get("meta", {}).get("player", ""))) == p_name_norm])
 
                     inning_results = {}
-                    for inn in range(1, 8):
-                        match = next((h for h in history if 
-                                     (h.get("batter_idx") == idx or h.get("meta", {}).get("batter_idx") == idx) and 
-                                     int(h.get("inning", 0)) == inn and 
-                                     h.get("is_offense") == is_offense_view and
-                                     h.get("event_type") in ["at_bat_result", "runner_event"]), None)
-                        
-                        res_val = ""
-                        if match:
-                            res_text = str(match.get("result") or match.get("value", ""))
-                            if ":" in res_text: res_text = res_text.split(":")[-1]
-                            
-                            raw_counts = match.get("counts_history", []) or match.get("meta", {}).get("counts_history", [])
-                            counts_str = "".join([pitch_map.get(c, "") for c in raw_counts])
-                            
-                            if counts_str:
-                                res_val = f"{res_text}\n({counts_str})"
-                            else:
-                                res_val = res_text
 
-                        inning_results[str(inn)] = res_val
+                    for col in col_definitions:
+                        is_active = (start_ab <= col["global_idx"] <= end_ab)
+                        
+                        if not is_active:
+                            res_val = "/"  
+                        else:
+                            match = next((h for h in history if 
+                                         (h.get("batter_idx") == idx or h.get("meta", {}).get("batter_idx") == idx) and 
+                                         int(h.get("inning", 0)) == col["inn"] and 
+                                         int(h.get("at_bat_no", 1)) == col["ab_no"] and
+                                         h.get("is_offense") == is_offense_view and
+                                         h.get("event_type") in ["at_bat_result", "runner_event"]), None)
+                            
+                            res_val = ""
+                            if match:
+                                res_text = str(match.get("result") or match.get("value", ""))
+                                if ":" in res_text: res_text = res_text.split(":")[-1]
+                                if "スキップ" in res_text:
+                                    res_val = "/"
+                                else:
+                                    raw_counts = match.get("counts_history", []) or match.get("meta", {}).get("counts_history", [])
+                                    counts_str = "".join([pitch_map.get(c, "") for c in raw_counts])
+                                    res_val = f"{res_text}\n({counts_str})" if counts_str else res_text
+
+                        inning_results[f"{col['inn']}_{col['ab_no']}"] = res_val
 
                     rows.append({
-                        "打順": idx + 1,
+                        "打順": idx + 1 if p_idx == 0 else "",
                         "守": p_info.get("pos", "---"),
                         "選手": p_name,
                         **inning_results,
-                        "打点": p_rbi,
-                        "得点": p_runs,
-                        "盗塁": p_sb,
-                        "失策": p_err
+                        "打点": p_rbi, "得点": p_runs, "盗塁": p_sb, "失策": p_err
                     })
             return pd.DataFrame(rows)
 
@@ -2250,14 +2583,24 @@ def show_receipt_view():
         return
 
     gp = st.session_state.get("game_progress", {})
+
+    setup = st.session_state.get("game_setup", {})
+    is_batting_first = setup.get("is_batting_first", 0) 
+
     game_info = {
         "date": st.session_state.get("game_date", str(date.today())),
         "my_team": st.session_state.get("my_team_name", "自チーム"),
         "opp_team": st.session_state.get("opponent_team_name", "相手チーム"),
-        "match_result": "試合終了" if gp.get("is_finished") else "進行中"
+        "match_result": "試合終了" if gp.get("is_finished") else "進行中",
+
+        "is_batting_first": is_batting_first 
     }
 
+    game_info["score_top"] = gp.get("score_top", 0)
+    game_info["score_bottom"] = gp.get("score_bottom", 0)
+
     import receipt_view
+
     receipt_view.show_receipt_screen(hist, game_info)
 
 
