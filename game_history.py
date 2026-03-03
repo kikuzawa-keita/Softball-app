@@ -139,53 +139,6 @@ def show():
             st.write(f"### {match_date_str} {top_team} {top_score} - {bottom_score} {bottom_team}")
 
 
-# ■見出し-----------------
-
-        if is_batting_first == 0:  # 自チームが先攻(Visitor)
-            final_my_score = v_total_score
-            final_opp_score = h_total_score
-        else:                      # 自チームが後攻(Home)
-            final_my_score = h_total_score
-            final_opp_score = v_total_score
-
-        if final_my_score > final_opp_score:
-            bg_color = "#e6f3ff"; border_color = "#004085"; result_label = "WIN"
-        elif final_my_score < final_opp_score:
-            bg_color = "#f8d7da"; border_color = "#721c24"; result_label = "LOSE"
-        else:
-            bg_color = "#fff3cd"; border_color = "#856404"; result_label = "DRAW"
-
-        top_bottom_label = "先攻(表)" if is_batting_first == 0 else "後攻(裏)"
-
-        if is_batting_first == 0:
-            score_text = f"自 {final_my_score} - {final_opp_score} 敵"
-        else:
-            score_text = f"敵 {final_opp_score} - {final_my_score} 自"
-
-        header_html = f"""
-            <div style="background-color: {bg_color}; padding: 12px 15px; border-radius: 5px; 
-                 border-left: 8px solid {border_color}; margin-bottom: 5px; display: flex; align-items: center;">
-                <div style="color: {border_color}; font-size: 0.95rem; width: 100%;">
-                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
-                        <span style="font-size: 1.15rem; font-weight: bold;">
-                            vs {opp_team_name}
-                        </span>
-                        <span style="font-size: 0.85rem; opacity: 0.8;">{match_date_str}</span>
-                    </div>
-                    <div style="font-size: 1.25rem; margin-top: 5px; font-weight: bold;">
-                        <span style="background: {border_color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75rem; vertical-align: middle; margin-right: 8px;">
-                            {result_label}
-                        </span>
-                        {score_text}
-                        <span style="font-size: 0.85rem; font-weight: normal; margin-left: 10px; opacity: 0.7;">
-                            [{top_bottom_label}]
-                        </span>
-                    </div>
-                </div>
-            </div>
-        """
-        st.markdown(header_html, unsafe_allow_html=True)
-
 # ---------------------
 #     試合情報表示
 # ---------------------
@@ -617,6 +570,54 @@ def show():
                                 st.error("削除処理に失敗しました。データベース管理者へ確認してください。")
 
         st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+
+
+# ■見出し-----------------
+
+        if is_batting_first == 0:  # 自チームが先攻(Visitor)
+            final_my_score = v_total_score
+            final_opp_score = h_total_score
+        else:                      # 自チームが後攻(Home)
+            final_my_score = h_total_score
+            final_opp_score = v_total_score
+
+        if final_my_score > final_opp_score:
+            bg_color = "#e6f3ff"; border_color = "#004085"; result_label = "WIN"
+        elif final_my_score < final_opp_score:
+            bg_color = "#f8d7da"; border_color = "#721c24"; result_label = "LOSE"
+        else:
+            bg_color = "#fff3cd"; border_color = "#856404"; result_label = "DRAW"
+
+        top_bottom_label = "先攻(表)" if is_batting_first == 0 else "後攻(裏)"
+
+        if is_batting_first == 0:
+            score_text = f"自 {final_my_score} - {final_opp_score} 敵"
+        else:
+            score_text = f"敵 {final_opp_score} - {final_my_score} 自"
+
+        header_html = f"""
+            <div style="background-color: {bg_color}; padding: 12px 15px; border-radius: 5px; 
+                 border-left: 8px solid {border_color}; margin-bottom: 5px; display: flex; align-items: center;">
+                <div style="color: {border_color}; font-size: 0.95rem; width: 100%;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <span style="font-size: 1.15rem; font-weight: bold;">
+                            vs {opp_team_name}
+                        </span>
+                        <span style="font-size: 0.85rem; opacity: 0.8;">{match_date_str}</span>
+                    </div>
+                    <div style="font-size: 1.25rem; margin-top: 5px; font-weight: bold;">
+                        <span style="background: {border_color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75rem; vertical-align: middle; margin-right: 8px;">
+                            {result_label}
+                        </span>
+                        {score_text}
+                        <span style="font-size: 0.85rem; font-weight: normal; margin-left: 10px; opacity: 0.7;">
+                            [{top_bottom_label}]
+                        </span>
+                    </div>
+                </div>
+            </div>
+        """
+        st.markdown(header_html, unsafe_allow_html=True)
 
 
 # ■投手勝敗判定
