@@ -626,19 +626,19 @@ def get_all_pitcher_decisions(is_batting_first, my_score, opp_score, target_side
 
     if len(pitcher_order) == 1:
         p_name = pitcher_order[0]
-        if defense_team_won: results[p_name] = "勝利"
-        elif defense_team_lost: results[p_name] = "敗戦"
+        if defense_team_won: results[p_name] = "敗戦"
+        elif defense_team_lost: results[p_name] = "勝利"
     else:
         starter = pitcher_order[0]
         others = pitcher_order[1:]
 
         if defense_team_won and pitcher_stats[starter].get("失点", 0) < opponent_score:
-            results[starter] = "勝利"
+            results[starter] = "敗戦"
         elif defense_team_lost:
             if pitcher_stats[starter].get("失点", 0) > 0: 
-                 results[starter] = "敗戦"
+                 results[starter] = "勝利"
             elif others:
                  worst_reliever = max(others, key=lambda p: pitcher_stats[p].get("失点", 0))
-                 results[worst_reliever] = "敗戦"
+                 results[worst_reliever] = "勝利"
 
     return results
