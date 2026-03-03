@@ -94,21 +94,6 @@ def show():
             top_team = opp_team_name
             bottom_team = my_team_name
 
-# ■先に計算しておくコード-----------
-
-logs = db.get_core_cct_logs(game_id)
-
-if not logs.empty:
-    is_my_team_top = (is_batting_first == 0)
-    v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
-    h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
-    
-    top_score = logs[logs['inning'].str.contains("表")]['run_result'].fillna("").apply(lambda x: len(x.split(',')) if x.strip() else 0).sum()
-    bottom_score = logs[logs['inning'].str.contains("裏")]['run_result'].fillna("").apply(lambda x: len(x.split(',')) if x.strip() else 0).sum()
-
-    v_total_score = top_score + v_hc
-    h_total_score = bottom_score + h_hc
-
 
 # ■詳細版呼び出し-----------------------
 
@@ -156,10 +141,41 @@ if not logs.empty:
 
 # ■見出し-----------------
 
-        if is_batting_first == 0:  # 自チームが先攻(Visitor)
+            is_my_team_top = (is_batting_first == 0)
+            visitor_name = my_team_name if is_my_team_top else opp_team_name
+            home_name = opp_team_name if is_my_team_top else my_team_name
+
+            v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
+            h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
+
+            def get_stats_by_side(side_suffix):
+                scores = []
+                side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
+                for i in range(1, 8):
+                    inn_name = f"{i}回{side_suffix}"
+                    inn_logs = side_logs[side_logs['inning'] == inn_name]
+                    if not inn_logs.empty:
+                        run_count = sum(len(str(res).split(',')) for res in inn_logs['run_result'].fillna("") if str(res).strip())
+                        scores.append(int(run_count))
+                    else:
+                        scores.append(0)
+                h_count = len(side_logs[(side_logs['event_type'] == 'at_bat_result') & (side_logs['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False))])
+                e_count = len(side_logs[side_logs['at_bat_result'].str.contains('失策|失', na=False)])
+                return scores, h_count, e_count
+
+            top_scores_list, top_h, e_on_top = get_stats_by_side("表")
+            bot_scores_list, bot_h, e_on_bot = get_stats_by_side("裏")
+
+            top_score_raw = sum(top_scores_list)
+            bot_score_raw = sum(bot_scores_list)
+
+            v_total_score = top_score_raw + v_hc
+            h_total_score = bot_score_raw + h_hc
+
+        if is_batting_first == 0:  
             final_my_score = v_total_score
             final_opp_score = h_total_score
-        else:                      # 自チームが後攻(Home)
+        else: 
             final_my_score = h_total_score
             final_opp_score = v_total_score
 
@@ -236,7 +252,7 @@ if not logs.empty:
                 st.table(sb_df)
 
 
-                tab_titles = ["🏏 打撃成績", "⚾ 投手成績", "📝 戦評"]
+                tab_titles = ["打撃成績", "投手成績", "📝 戦評"]
                 if user_role == "admin":
                     tab_titles.append("⚠️ 管理")
                 
@@ -304,68 +320,21 @@ if not logs.empty:
                                 st.error("削除処理に失敗しました。データベースの接続を確認してください。")
 
 # ===== 分析版 =====
-
-            elif not logs.empty:
-                
+              
 # ■スコアボード生成
 
-                is_my_team_top = (is_batting_first == 0) 
-                
-                visitor_name = my_team_name if is_my_team_top else opp_team_name
-                home_name = opp_team_name if is_my_team_top else my_team_name                
-
-                v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
-                h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
-
-                def get_stats_by_side(side_suffix):
-                    scores = []
-                    side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
-
-                    for i in range(1, 8):
-                        inn_name = f"{i}回{side_suffix}"
-                        inn_logs = side_logs[side_logs['inning'] == inn_name]
-
-                        if not inn_logs.empty:
-                            inning_run_count = 0
-                            for res in inn_logs['run_result'].fillna(""):
-                                if res.strip():
-                                    inning_run_count += len(res.split(','))
-                            scores.append(int(inning_run_count))
-                        else:
-                            scores.append("")
-
-                    h_count = len(side_logs[
-                        (side_logs['event_type'] == 'at_bat_result') & 
-                        (side_logs['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False))
-                    ])
-
-                    e_occured_in_this_side = len(side_logs[side_logs['at_bat_result'].str.contains('失策|失', na=False)])                    
-                    return scores, h_count, e_occured_in_this_side
-
-                top_scores, top_h, e_on_top_attack = get_stats_by_side("表")
-                bot_scores, bot_h, e_on_bot_attack = get_stats_by_side("裏")
-
-                v_e_final = e_on_bot_attack
-                h_e_final = e_on_top_attack
-
-                v_total_score = top_score + v_hc
-                h_total_score = bottom_score + h_hc
+            elif not logs.empty:
 
                 sb_df = pd.DataFrame({
-                    "チーム": [visitor_name, home_name], 
+                    "チーム": [visitor_name, home_name],
                     "HC": [v_hc if v_hc else "", h_hc if h_hc else ""],
-                    "1": [top_scores[0], bot_scores[0]], 
-                    "2": [top_scores[1], bot_scores[1]],
-                    "3": [top_scores[2], bot_scores[2]], 
-                    "4": [top_scores[3], bot_scores[3]],
-                    "5": [top_scores[4], bot_scores[4]], 
-                    "6": [top_scores[5], bot_scores[5]],
-                    "7": [top_scores[6], bot_scores[6]],
-                    "R": [v_total_score, h_total_score], 
-                    "H": [top_h, bot_h], 
-                    "E": [v_e_final, h_e_final] 
+                    "1": [top_scores_list[0], bot_scores_list[0]], "2": [top_scores_list[1], bot_scores_list[1]],
+                    "3": [top_scores_list[2], bot_scores_list[2]], "4": [top_scores_list[3], bot_scores_list[3]],
+                    "5": [top_scores_list[4], bot_scores_list[4]], "6": [top_scores_list[5], bot_scores_list[5]],
+                    "7": [top_scores_list[6], bot_scores_list[6]],
+                    "R": [v_total_score, h_total_score], "H": [top_h, bot_h], "E": [e_on_bot, e_on_top]
                 }).set_index("チーム")
-                
+
                 st.table(sb_df)
 
 # ■打撃詳細
@@ -560,11 +529,11 @@ if not logs.empty:
                 user_role = st.session_state.get('user_role', 'guest')
 
                 if is_batting_first == 0:
-                    top_tab_label = f"🏏 {my_team_name} (先攻)"
-                    bottom_tab_label = f"⚾ {opp_team_name} (後攻)"
+                    top_tab_label = f" {my_team_name} (先攻)"
+                    bottom_tab_label = f" {opp_team_name} (後攻)"
                 else:
-                    top_tab_label = f"⚾ {opp_team_name} (先攻)"
-                    bottom_tab_label = f"🏏 {my_team_name} (後攻)"
+                    top_tab_label = f" {opp_team_name} (先攻)"
+                    bottom_tab_label = f" {my_team_name} (後攻)"
 
                 tab_list = [top_tab_label, bottom_tab_label, "📝 戦評"]
                 if user_role == "admin":
