@@ -149,12 +149,23 @@ def show():
             visitor_name = my_team_name if is_my_team_top else opp_team_name
             home_name = opp_team_name if is_my_team_top else my_team_name
 
-            v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
-            h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
+            if not logs.empty:
+                v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
+                h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
+            else:
+                v_hc = 0
+                h_hc = 0
 
             def get_stats_by_side(side_suffix):
-                scores = []
+                scores = [0, 0, 0, 0, 0, 0, 0]
+                h_count = 0
+                e_count = 0
+
+                if logs.empty:
+                    return scores, h_count, e_count
+                
                 side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
+                scores = []
                 for i in range(1, 8):
                     inn_name = f"{i}回{side_suffix}"
                     inn_logs = side_logs[side_logs['inning'] == inn_name]
@@ -644,5 +655,6 @@ def get_all_pitcher_decisions(is_batting_first, my_score, opp_score, target_side
             elif others:
                  worst_reliever = max(others, key=lambda p: pitcher_stats[p].get("失点", 0))
                  results[worst_reliever] = "勝利"
+
 
     return results
