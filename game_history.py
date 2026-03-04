@@ -102,16 +102,24 @@ def show():
             
             with sqlite3.connect("softball.db") as conn:
                 raw_id = g_id.replace("no_", "")
-                g_info = pd.read_sql("SELECT my_score, opp_score, is_top_flag FROM games WHERE id=?", conn, params=(raw_id,))
-                
+                g_info = pd.read_sql("SELECT my_score, opp_score, is_top_flag, my_team_name, opponent FROM games WHERE id=?", conn, params=(raw_id,))
+
                 if not g_info.empty:
-                    my_score = int(g_info.iloc[0]['my_score'])
-                    opp_score = int(g_info.iloc[0]['opp_score'])
-                    if is_batting_first == 0:
+                    row = g_info.iloc[0]
+                    my_score = int(row['my_score'])
+                    opp_score = int(row['opp_score'])
+                    is_top = int(row['is_top_flag']) 
+                    m_name = row['my_team_name'] if row['my_team_name'] else "自チーム"
+                    o_name = row['opponent']
+
+                    if is_top == 0: 
+                        top_team, bottom_team = m_name, o_name
                         top_score, bottom_score = my_score, opp_score
-                    else:
+                    else: 
+                        top_team, bottom_team = o_name, m_name
                         top_score, bottom_score = opp_score, my_score
                 else:
+                    top_team, bottom_team = "---", "---"
                     top_score, bottom_score = 0, 0
 
             is_my_team_top = (is_batting_first == 0)
@@ -149,23 +157,12 @@ def show():
             visitor_name = my_team_name if is_my_team_top else opp_team_name
             home_name = opp_team_name if is_my_team_top else my_team_name
 
-            if not logs.empty:
-                v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
-                h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
-            else:
-                v_hc = 0
-                h_hc = 0
+            v_hc = int(logs.iloc[0].get('handicap_my_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_opp_team', 0) or 0)
+            h_hc = int(logs.iloc[0].get('handicap_opp_team', 0) if is_my_team_top else logs.iloc[0].get('handicap_my_team', 0) or 0)
 
             def get_stats_by_side(side_suffix):
-                scores = [0, 0, 0, 0, 0, 0, 0]
-                h_count = 0
-                e_count = 0
-
-                if logs.empty:
-                    return scores, h_count, e_count
-                
-                side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
                 scores = []
+                side_logs = logs[logs['inning'].str.contains(side_suffix)].copy()
                 for i in range(1, 8):
                     inn_name = f"{i}回{side_suffix}"
                     inn_logs = side_logs[side_logs['inning'] == inn_name]
@@ -242,30 +239,49 @@ def show():
 # ===== 詳細版 =====
 
             if g_id.startswith("no_"):
+                batting_df, pitching_df = db.get_nomal_score_detail(g_id)
 
-                is_my_team_top = (is_batting_first == 0) 
+                with sqlite3.connect(db.DB_NAME) as conn:
+                        raw_id = g_id.replace("no_", "")
+                        query = "SELECT my_team_name, opponent, is_top_flag, my_score, opp_score, score_str_v, score_str_h FROM games WHERE id=?"
+                        g_info = pd.read_sql(query, conn, params=(raw_id,))
+                        if not g_info.empty:
+                            row = g_info.iloc[0]
+                            db_my_team = row['my_team_name'] if row['my_team_name'] else "自チーム"
+                            db_opp_team = row['opponent']
+                            db_is_top = int(row['is_top_flag']) 
+                            v_list = row['score_str_v'].split(',') if row['score_str_v'] else ["0"] + ["ー"]*7 + [str(row['my_score'] if db_is_top==0 else row['opp_score'])]
+                            h_list = row['score_str_h'].split(',') if row['score_str_h'] else ["0"] + ["ー"]*7 + [str(row['my_score'] if db_is_top==1 else row['opp_score'])]
 
-                visitor_name = my_team_name if is_my_team_top else opp_team_name
-                home_name = opp_team_name if is_my_team_top else my_team_name
-
-                v_total = top_score
-                h_total = bottom_score
-
-                v_scores, h_scores = [""] * 7, [""] * 7
+                            if db_is_top == 0:
+                                visitor_name, home_name = db_my_team, db_opp_team
+                                top_score, bottom_score = row['my_score'], row['opp_score']
+                            else:
+                                visitor_name, home_name = db_opp_team, db_my_team
+                                top_score, bottom_score = row['opp_score'], row['my_score']
+                        else:
+                            visitor_name, home_name = "先攻", "後攻"
+                            v_list = h_list = ["0", "ー", "ー", "ー", "ー", "ー", "ー", "ー", "0"]
+                            top_score = bottom_score = 0
 
                 sb_df = pd.DataFrame({
                     "チーム": [visitor_name, home_name],
-                    "1": [v_scores[0], h_scores[0]], "2": [v_scores[1], h_scores[1]],
-                    "3": [v_scores[2], h_scores[2]], "4": [v_scores[3], h_scores[3]],
-                    "5": [v_scores[4], h_scores[4]], "6": [v_scores[5], h_scores[5]],
-                    "7": [v_scores[6], h_scores[6]],
-                    "R": [v_total, h_total],
-                    "H": ["-", "-"] 
+                    "HC": [v_list[0], h_list[0]], 
+                    "1": [v_list[1], h_list[1]], 
+                    "2": [v_list[2], h_list[2]],
+                    "3": [v_list[3], h_list[3]], 
+                    "4": [v_list[4], h_list[4]],
+                    "5": [v_list[5], h_list[5]], 
+                    "6": [v_list[6], h_list[6]],
+                    "7": [v_list[7], h_list[7]],                    
+                    "R": [v_list[8], h_list[8]],
+#                    "H": [v_hits, h_hits],
+#                    "E": [v_err, h_err]
                 }).set_index("チーム")
                 
+                st.write(f"### {match_date_str} {visitor_name} {top_score} - {bottom_score} {home_name}")
                 st.write("### 🔢 スコアボード")
                 st.table(sb_df)
-
 
                 tab_titles = ["打撃成績", "投手成績", "📝 戦評"]
                 if user_role == "admin":
@@ -311,7 +327,6 @@ def show():
                     elif not can_edit:
                         st.info("戦評はまだ登録されていません。")
 
-                # 管理タブ
                 if user_role == "admin":
                     with tabs[3]:
                         st.subheader("⚙️ 試合データの個別削除")
@@ -326,13 +341,14 @@ def show():
                         
                         confirm = st.checkbox("この試合の全データ削除を承認します", key=f"del_chk_normal_{g_id}")
                         if st.button("🗑️ この試合を完全に削除", key=f"del_btn_normal_{g_id}", disabled=not confirm, type="primary"):
+                            # IDのクリーニング（'no_'を除去して削除関数へ）
                             target_id = g_id.replace("no_", "") if g_id.startswith("no_") else g_id
                             
                             if db.delete_game_full(target_id, club_id):
                                 st.success(f"試合 {g_id} を削除しました。")
                                 st.rerun()
                             else:
-                                st.error("削除処理に失敗しました。データベースの接続を確認してください。")
+                                st.error("削除処理に失敗しました。")
 
 # ===== 分析版 =====
               
@@ -655,6 +671,5 @@ def get_all_pitcher_decisions(is_batting_first, my_score, opp_score, target_side
             elif others:
                  worst_reliever = max(others, key=lambda p: pitcher_stats[p].get("失点", 0))
                  results[worst_reliever] = "勝利"
-
 
     return results

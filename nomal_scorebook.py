@@ -17,36 +17,38 @@ def show():
 
 # ■①試合情報--------------
 
-    with st.expander("① 試合情報", expanded=False):
+    with st.expander("① 試合情報", expanded=True):
         c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])        
         with c1:
             game_date = st.date_input("試合日", date.today()) 
         with c2:
-            opponent = st.text_input("大会名", placeholder="大会名を入力")       
+            tournament_name = st.text_input("大会名", placeholder="大会名を入力")       
         with c3:
             my_team = st.selectbox("自チーム", options=team_options)            
         with c4:
-            opponent = st.text_input("対戦相手", placeholder="相手チーム名を入力")
+            opponent_name = st.text_input("対戦相手", placeholder="相手チーム名を入力")
 
-        batting_order_sel = st.radio("", 
-            ["自チームが先攻", "自チームが後攻"], 
-            horizontal=True,
-            label_visibility="collapsed"
+        batting_order_sel = st.radio("自チームの攻撃順", 
+            ["先攻(表)", "後攻(裏)"], 
+            horizontal=True
         )
+
         is_top_flag = 0 if "先攻" in batting_order_sel else 1
+
         if is_top_flag == 0:
-            top_team = my_team
-            bottom_team = opponent if opponent else "相手チーム"
+            top_team_display = my_team
+            bottom_team_display = opponent_name if opponent_name else "相手チーム"
         else:
-            top_team = opponent if opponent else "相手チーム"
-            bottom_team = my_team
+            top_team_display = opponent_name if opponent_name else "相手チーム"
+            bottom_team_display = my_team
 
         inning_options = ["ー", "X"] + [str(i) for i in range(31)]
 
         sb_df = pd.DataFrame({
-            "チーム": [f"{top_team}", f"{bottom_team}"],
-            "HC": [0, 0], "1": ["ー", "ー"], "2": ["ー", "ー"], "3": ["ー", "ー"], "4": ["ー", "ー"], 
-            "5": ["ー", "ー"], "6": ["ー", "ー"], "7": ["ー", "ー"], "計": [0, 0]
+            "順序": ["先攻(表)", "後攻(裏)"],
+            "チーム": [top_team_display, bottom_team_display], 
+            "HC": [0, 0], "1": ["ー", "ー"], "2": ["ー", "ー"], "3": ["ー", "ー"], 
+            "4": ["ー", "ー"], "5": ["ー", "ー"], "6": ["ー", "ー"], "7": ["ー", "ー"], "計": [0, 0]
         })
 
         edited_sb = st.data_editor(
@@ -55,6 +57,7 @@ def show():
             key="score_editor",
             use_container_width=True,
             column_config={
+                "順序": st.column_config.Column(disabled=True, width="small"),
                 "チーム": st.column_config.Column(disabled=True),
                 "HC": st.column_config.NumberColumn("HC", min_value=0, max_value=99, step=1),
                 "1": st.column_config.SelectboxColumn(options=inning_options, width="small"),
@@ -64,13 +67,17 @@ def show():
                 "5": st.column_config.SelectboxColumn(options=inning_options, width="small"),
                 "6": st.column_config.SelectboxColumn(options=inning_options, width="small"),
                 "7": st.column_config.SelectboxColumn(options=inning_options, width="small"),
-                "計": st.column_config.NumberColumn("計", min_value=0, max_value=99, step=1), 
+                "計": st.column_config.NumberColumn("R", min_value=0, max_value=99, step=1),
             }
-
         )
 
-    my_total = edited_sb.iloc[0]["計"] if is_top_flag == 0 else edited_sb.iloc[1]["計"]
-    opp_total = edited_sb.iloc[1]["計"] if is_top_flag == 0 else edited_sb.iloc[0]["計"]
+    v_total = edited_sb.iloc[0]["計"] 
+    h_total = edited_sb.iloc[1]["計"] 
+
+    if is_top_flag == 0:
+        my_total, opp_total = v_total, h_total
+    else:
+        my_total, opp_total = h_total, v_total
 
 
 # ■②投手成績--------------
@@ -172,35 +179,38 @@ def show():
     st.markdown("---")
     if st.button("試合結果を保存して同期 (ノーマル形式)", type="primary", use_container_width=True):
         try:
-            if not opponent:
+            if not opponent_name:
                 st.error("対戦相手を入力してください")
             elif edited_bat[edited_bat["選手名"] != ""].empty:
-                st.error("選手名を入力してください")
+                st.error("打撃成績に選手名を入力してください")
             else:
-                # デバッグ用：処理開始をコンソールに出力
-                print("Saving started...")
+                final_sb = edited_sb.copy()
+                final_sb.iloc[0, final_sb.columns.get_loc("計")] = v_total
+                final_sb.iloc[1, final_sb.columns.get_loc("計")] = h_total
 
-                # 1. データの整理
                 pitching_list = edited_p[edited_p["投手名"] != ""].to_dict(orient='records')
                 batting_list = edited_bat[edited_bat["選手名"] != ""].to_dict(orient='records')
                 
                 game_info = {
                     "date": str(game_date),
-                    "opponent": opponent,
-                    "is_top_flag": is_top_flag,
-                    "scoreboard": edited_sb.to_dict(),
+                    "tournament": tournament_name, 
+                    "opponent": opponent_name,
+                    "my_team": my_team,
+                    "my_score": my_total,
+                    "opp_score": opp_total,
+                    "is_top_flag": is_top_flag, 
+                    "scoreboard": final_sb.to_dict(orient='records'), 
                     "pitching": pitching_list,
                     "batting": batting_list
                 }
 
-                # 2. 保存実行
                 new_game_id = db.save_nomal_score_independent(club_id, game_info)
                 
                 if new_game_id:
                     st.success(f"試合結果を保存しました (ID: {new_game_id})")
                     st.balloons()
+
                 else:
-                    # ここでエラーを表示
-                    st.error("データベースへの保存に失敗しました。database.pyのログを確認してください。")
+                    st.error("データベースへの保存に失敗しました。")
         except Exception as e:
             st.error(f"プログラム実行中にエラーが発生しました: {e}")

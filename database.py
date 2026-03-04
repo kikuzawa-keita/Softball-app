@@ -7,6 +7,7 @@ import streamlit as st
 import copy
 from datetime import datetime
 
+
 DB_NAME = 'softball.db'
 
 # -------------—-
@@ -1721,14 +1722,54 @@ def get_players(club_id):
         print(f"Error in get_players: {e}")
         return pd.DataFrame() 
 
+def init_pitching_table_extension():
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        try:
+            c.execute("SELECT decision FROM scorebook_pitching LIMIT 1")
+        except sqlite3.OperationalError:
+            print("Adding 'decision' column to scorebook_pitching table...")
+            c.execute("ALTER TABLE scorebook_pitching ADD COLUMN decision TEXT DEFAULT ''")
+            conn.commit()
+
+def init_games_table_extension():
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        extensions = [
+            ("scoreboard_json", "TEXT"),
+            ("my_team_name", "TEXT DEFAULT '自チーム'"),
+            ("score_str_v", "TEXT DEFAULT '0,ー,ー,ー,ー,ー,ー,ー,0'"),
+            ("score_str_h", "TEXT DEFAULT '0,ー,ー,ー,ー,ー,ー,ー,0'")
+        ]
+        for col, col_type in extensions:
+            try:
+                c.execute(f"SELECT {col} FROM games LIMIT 1")
+            except sqlite3.OperationalError:
+                print(f"Adding {col} column to games table...")
+                c.execute(f"ALTER TABLE games ADD COLUMN {col} {col_type}")
+        conn.commit()
+
 def get_nomal_score_detail(game_id):
+    init_pitching_table_extension()
+    init_games_table_extension()
     with sqlite3.connect(DB_NAME) as conn:
 
         p_query = """
             SELECT 
-                player_name as 投手名, ip as 回, np as 球数, h as 被安, hr as 被本, 
-                so as 奪三, bb as 与四, hbp as 与死, r as 失点, er as 自責, wp as WP
-            FROM scorebook_pitching WHERE game_id = ?
+                player_name as 投手名, 
+                ip as 回, 
+                np as 球数, 
+                h as 被安打, 
+                hr as 被本, 
+                so as 奪三振, 
+                bb as 与四球, 
+                hbp as 与死球, 
+                wp as WP,
+                r as 失点, 
+                er as 自責点,
+                decision as 勝敗
+            FROM scorebook_pitching 
+            WHERE game_id = ?
         """
         pitching_df = pd.read_sql(p_query, conn, params=(game_id,))
 
@@ -1738,42 +1779,70 @@ def get_nomal_score_detail(game_id):
         batting_list = []
         for _, row in b_raw.iterrows():
 
-            innings = json.loads(row['innings'])
-            summary = json.loads(row['summary'])
-            
-            entry = {"選手名": row['player_name']}
-            entry.update(innings) # 1~7回のデータ
+            try:
+                innings = json.loads(row['innings'])
+                summary = json.loads(row['summary'])
+            except:
+                innings = {}
+                summary = {}
+
+            entry = {
+                "打順": summary.get("order", 0), 
+                "選手名": row['player_name']
+            }
+            entry.update(innings) 
             entry.update({
                 "打点": summary.get("rbi", 0),
                 "得点": summary.get("run", 0),
                 "盗塁": summary.get("sb", 0),
-                "失策": summary.get("err", 0),
-                "打順": summary.get("order", 0)
+                "失策": summary.get("err", 0)
             })
             batting_list.append(entry)
             
-        batting_df = pd.DataFrame(batting_list)
+        batting_df = pd.DataFrame(batting_list) if batting_list else pd.DataFrame()
         
     return batting_df, pitching_df
 
 def save_nomal_score_independent(club_id, game_info):
+
+    init_games_table_extension()
+    init_pitching_table_extension()
+
+    sb = game_info.get('scoreboard', [])
+    def make_s(row):
+        vals = [str(row.get(k, "0" if k in ["HC","計"] else "ー")) for k in ["HC","1","2","3","4","5","6","7","計"]]
+        return ",".join(vals)
+    
+    s_v = make_s(sb[0]) if len(sb) > 0 else "0,ー,ー,ー,ー,ー,ー,ー,0"
+    s_h = make_s(sb[1]) if len(sb) > 1 else "0,ー,ー,ー,ー,ー,ー,ー,0"
+
     try:
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
 
-            sb = game_info['scoreboard']
+            sb_list = game_info.get('scoreboard', [])
+            sb_json = json.dumps(sb_list, ensure_ascii=False)
+
             try:
-                my_score = int(sb['計'][0])
-                opp_score = int(sb['計'][1])
+                v_total = sb_list[0].get('計', 0)
+                h_total = sb_list[1].get('計', 0)
+
             except:
-                my_score, opp_score = 0, 0
+                v_total, h_total = 0, 0
+
+            is_top = game_info.get('is_top_flag', 0)
+            my_score = v_total if is_top == 0 else h_total
+            opp_score = h_total if is_top == 0 else v_total
 
             result_str = "○" if my_score > opp_score else "●" if my_score < opp_score else "△"
 
-            c.execute('''INSERT INTO games (club_id, date, opponent, my_score, opp_score, result, is_top_flag)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                      (club_id, game_info['date'], game_info['opponent'], my_score, opp_score, result_str, game_info['is_top_flag']))
-            
+            c.execute('''INSERT INTO games 
+                         (club_id, date, opponent, my_score, opp_score, result, is_top_flag, my_team_name, score_str_v, score_str_h)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (club_id, game_info['date'], game_info['opponent'], 
+                       my_score, opp_score, result_str, is_top, 
+                       game_info.get('my_team', '自チーム'), s_v, s_h))
+
             raw_id = c.lastrowid
             no_game_id = f"no_{raw_id}"
 
@@ -1782,8 +1851,8 @@ def save_nomal_score_independent(club_id, game_info):
                 if not p_name: continue
 
                 c.execute('''INSERT INTO scorebook_pitching 
-                             (game_id, club_id, player_name, ip, win, loss, save, np, h, hr, bb, hbp, so, r, er, wp, date)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                             (game_id, club_id, player_name, ip, win, loss, save, np, h, hr, bb, hbp, so, r, er, wp, date, decision)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                           (no_game_id, club_id, p_name, 
                            p.get('回数', '0'), 
                            1 if p.get('結果')=="勝利" else 0, 
@@ -1798,7 +1867,8 @@ def save_nomal_score_independent(club_id, game_info):
                            p.get('失点', 0), 
                            p.get('自責', 0), 
                            p.get('WP', 0),   
-                           game_info['date']))
+                           game_info['date'],
+                           p.get('結果', '')))
 
             for b in game_info['batting']:
                 innings_data = json.dumps({str(i): b.get(str(i), "") for i in range(1, 8)}, ensure_ascii=False)
@@ -1817,6 +1887,7 @@ def save_nomal_score_independent(club_id, game_info):
             conn.commit()
             print(f"Successfully saved as {no_game_id}")
             return no_game_id
+
     except Exception as e:
         import traceback
         print("--- Save Error Detail ---")
