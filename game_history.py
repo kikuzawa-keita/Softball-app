@@ -114,6 +114,10 @@ def show():
                 else:
                     top_score, bottom_score = 0, 0
 
+            is_my_team_top = (is_batting_first == 0)
+            v_total_score = top_score
+            h_total_score = bottom_score
+
             st.write(f"### {match_date_str} {top_team} {top_score} - {bottom_score} {bottom_team}")
 
 # ■分析版呼び出し------------------------
