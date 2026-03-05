@@ -2207,12 +2207,18 @@ def show_score_sheet():
                         t_inn = int(col["inn"])
                         t_ab_no = int(col["ab_no"])
 
-                        match = next((h for h in history if 
-                                     (h.get("batter_idx") == slot["idx"] or h.get("meta", {}).get("batter_idx") == slot["idx"]) and 
-                                     int(h.get("inning", 0)) == t_inn and 
-                                     int(h.get("at_bat_no", 1)) == t_ab_no and 
-                                     h.get("is_offense") == is_offense_view and
-                                     h.get("event_type") in ["at_bat_result", "runner_event"]), None)
+                        match = None
+                        if is_active: 
+                            potential_matches = [h for h in history if 
+                                                (h.get("batter_idx") == slot["idx"] or h.get("meta", {}).get("batter_idx") == slot["idx"]) and 
+                                                int(h.get("inning", 0)) == t_inn and 
+                                                int(h.get("at_bat_no", 1)) == t_ab_no and 
+                                                h.get("is_offense") == is_offense_view and
+                                                h.get("event_type") in ["at_bat_result", "runner_event"]]
+    
+                            if potential_matches:
+                                match = next((m for m in potential_matches if 
+                                                normalize_player_name(str(m.get("player") or m.get("meta", {}).get("player", ""))) == p_name_norm), None)
                         
                         if match:
                             res_text = str(match.get("result") or match.get("value", ""))
