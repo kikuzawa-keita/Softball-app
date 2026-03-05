@@ -325,12 +325,17 @@ def show():
     st.divider()
 
     for _, master_row in filtered_df.iterrows():
+
+        final_my_score = 0
+        final_opp_score = 0
         
         match_date_str = master_row['match_date']
-        my_team_name = master_row['my_team_name']
-        opp_team_name = master_row['opp_team_name']
 
         is_batting_first = int(master_row['is_top_flag'] or 0)
+        g_id = str(master_row['game_id'])
+
+        my_team_name = master_row['my_team_name']
+        opp_team_name = master_row['opp_team_name']
 
         v_total_score = 0
         h_total_score = 0
@@ -346,19 +351,19 @@ def show():
         e_on_top = 0
         e_on_bot = 0
 
-        g_id = str(master_row['game_id'])
-
         visitor_name = my_team_name if is_batting_first == 0 else opp_team_name
         home_name = opp_team_name if is_batting_first == 0 else my_team_name
 
         # ■ データ読み込み -----------------------
         if g_id.startswith("no_"):
+
             # 詳細版
             with sqlite3.connect("softball.db") as conn:
                 raw_id = g_id.replace("no_", "")
                 g_info = pd.read_sql("SELECT my_score, opp_score, is_top_flag, my_team_name, opponent FROM games WHERE id=?", conn, params=(raw_id,))
                 if not g_info.empty:
                     gi = g_info.iloc[0]
+
                     final_my_score = int(gi['my_score'])
                     final_opp_score = int(gi['opp_score'])
                     m_name = gi['my_team_name'] if gi['my_team_name'] else "自チーム"
@@ -366,7 +371,9 @@ def show():
                     visitor_name = m_name if is_batting_first == 0 else o_name
                     home_name = o_name if is_batting_first == 0 else m_name
         else:
+
             # 分析版
+
             with sqlite3.connect("softball.db") as conn:
                 logs = pd.read_sql(
                     "SELECT * FROM core_cct_logs WHERE game_id = ? AND club_id = ? ORDER BY id ASC", 
@@ -383,13 +390,14 @@ def show():
             top_scores_list, top_h, e_on_bot = get_stats_by_side(logs, "表")
             bot_scores_list, bot_h, e_on_top = get_stats_by_side(logs, "裏")
 
-            v_total_score = sum(top_scores_list) + v_hc
-            h_total_score = sum(bot_scores_list) + h_hc
+            v_total = sum(top_scores_list) + v_hc
+            h_total = sum(bot_scores_list) + h_hc
 
             if is_my_team_top:
-                final_my_score, final_opp_score = v_total_score, h_total_score
+                final_my_score, final_opp_score = v_total, h_total
             else:
-                final_my_score, final_opp_score = h_total_score, v_total_score
+                final_my_score, final_opp_score = h_total, v_total
+
 
         # ■ 見出し描画 -----------------
         if final_my_score > final_opp_score:
@@ -398,6 +406,9 @@ def show():
             bg_color = "#f8d7da"; border_color = "#721c24"; result_label = "LOSE"
         else:
             bg_color = "#fff3cd"; border_color = "#856404"; result_label = "DRAW"
+
+        final_my_score = final_my_score or 0
+        final_opp_score = final_opp_score or 0
 
         score_text = f"自 {final_my_score} - {final_opp_score} 敵" if is_batting_first == 0 else f"敵 {final_opp_score} - {final_my_score} 自"
         top_bottom_label = "先攻(表)" if is_batting_first == 0 else "後攻(裏)"
@@ -417,7 +428,6 @@ def show():
         """
         st.markdown(header_html, unsafe_allow_html=True)
 
-        # ！！【修正ポイント】冗長だった単独の「詳細スコアを表示(st.expander)」を削除し、詳細表示に一本化しました！！
 
         # ■ 試合情報表示 (詳細版・分析版の分岐) ---------------------
         with st.expander(f"詳細表示 (ID: {g_id})"):
