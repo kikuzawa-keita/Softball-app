@@ -145,7 +145,7 @@ if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
 # --- ここに追加 ---
     st.sidebar.markdown("---")
     st.sidebar.warning("⚠️ メンテナンス用")
-    if st.sidebar.button("🔥 詳細版データを一括清掃する"):
+    if st.sidebar.button("🔥 詳細版データを一括清掃する", key="cleanup_btn"):
         # database.pyに実装した関数を呼び出し
         result = db.delete_all_manual_games(club_id)
         st.sidebar.success(result)
