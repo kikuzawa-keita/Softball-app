@@ -160,7 +160,7 @@ def show():
     st.divider()
 
     for _, master_row in filtered_df.iterrows():
-        g_id = str(master_row['game_id'])
+        
         match_date_str = master_row['match_date']
         my_team_name = master_row['my_team_name']
         opp_team_name = master_row['opp_team_name']
@@ -174,8 +174,12 @@ def show():
         h_hc = 0
         final_my_score = 0
         final_opp_score = 0
-        top_h = 0; bot_h = 0
-        e_on_top = 0; e_on_bot = 0
+        top_h = 0
+        bot_h = 0
+        e_on_top = 0
+        e_on_bot = 0
+
+        g_id = str(master_row['game_id'])
 
         visitor_name = my_team_name if is_batting_first == 0 else opp_team_name
         home_name = opp_team_name if is_batting_first == 0 else my_team_name
