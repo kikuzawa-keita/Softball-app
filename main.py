@@ -144,6 +144,14 @@ if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
 
 
 
+# 管理タブ(tabs[3])などの中に一時的に配置
+if st.button("🔥 詳細版データを一括清掃する"):
+    result = db.delete_all_manual_games(club_id)
+    st.warning(result)
+    st.rerun()
+
+
+
 # ■デバッグ-----------------
 
 def check_sync_data():

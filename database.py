@@ -1893,3 +1893,43 @@ def save_nomal_score_independent(club_id, game_info):
         print("--- Save Error Detail ---")
         traceback.print_exc()
         return None
+
+
+def delete_all_manual_games(club_id):
+    """
+    club_id に紐づく、詳細スコア入力（手動入力）の試合データをすべて削除する。
+    ※ core_cct_logs に存在しない games テーブルのデータが対象。
+    """
+    import sqlite3
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            
+            # 1. 削除対象の ID リストを取得 (cctログにないID)
+            query_select = """
+                SELECT id FROM games 
+                WHERE club_id = ? 
+                AND id NOT IN (SELECT DISTINCT game_id FROM core_cct_logs WHERE game_id IS NOT NULL)
+            """
+            cursor.execute(query_select, (str(club_id),))
+            target_ids = [row[0] for row in cursor.fetchall()]
+
+            if not target_ids:
+                return "削除対象の詳細版データは見つかりませんでした。"
+
+            # 2. 各テーブルから関連データを削除
+            # SQLiteで IN 句にリストを渡すための準備
+            placeholders = ','.join(['?'] * len(target_ids))
+            
+            # 成績詳細の削除
+            cursor.execute(f"DELETE FROM game_details WHERE game_id IN ({placeholders})", target_ids)
+            # 戦評の削除
+            cursor.execute(f"DELETE FROM game_comments WHERE game_id IN ({placeholders})", target_ids)
+            # 試合基本情報の削除
+            cursor.execute(f"DELETE FROM games WHERE id IN ({placeholders})", target_ids)
+            
+            conn.commit()
+            return f"{len(target_ids)} 件の詳細版試合データを削除しました。"
+            
+    except Exception as e:
+        return f"削除中にエラーが発生しました: {e}"
