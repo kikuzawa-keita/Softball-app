@@ -83,169 +83,6 @@ def get_stats_by_side(logs, side_suffix):
     
     return scores, h_count, e_count
 
-def render_side_details(target_side, logs, is_batting_first, final_my_score, final_opp_score):
-    """指定された攻撃サイド（表/裏）の「打撃成績」と、その時に守備をしていた相手の「投手成績」を描画する"""
-    side_all_logs = logs[logs['inning'].str.contains(target_side)].copy()
-    opp_side = "裏" if target_side == "表" else "表"
-    defense_logs = logs[logs['inning'].str.contains(opp_side)].copy()
-    side_bat_logs = side_all_logs[side_all_logs['event_type'] == 'at_bat_result'].copy()
-    
-    # --- 1. 打撃詳細 ---
-    st.markdown(f"##### 🏏 {target_side}の攻撃 (打撃成績)")
-    if not side_bat_logs.empty:
-        rows_data = []
-        for name in side_bat_logs['batter_name'].unique():
-            if not name: continue
-            
-            p_bat = side_bat_logs[side_bat_logs['batter_name'] == name]                        
-            d = {
-                "打順": int(p_bat['batting_order'].min()) if not p_bat['batting_order'].empty else 0,
-                "選手名": name
-            }
-
-            for i in range(1, 8):
-                inn_str = f"{i}回{target_side}"
-                inn_bat = p_bat[p_bat['inning'] == inn_str]
-                if not inn_bat.empty:
-                    d[f"{i}"] = " / ".join(inn_bat['at_bat_result'].fillna("").astype(str).tolist())
-                else:
-                    d[f"{i}"] = ""
-
-            rbi_count = 0
-            for res in p_bat['run_result'].fillna(""):
-                if str(res).strip():
-                    rbi_count += len(str(res).split(','))                        
-
-            run_count = calculate_all_runs(side_all_logs, name)
-            sb_count = len(side_all_logs[
-                (side_all_logs['event_type'] == 'runner_event') & 
-                (side_all_logs['at_bat_result'].str.contains('盗塁', na=False)) &
-                (side_all_logs['batter_name'].str.strip() == name.strip())
-            ])
-            error_count = (defense_logs['error_player'].fillna("").str.strip() == name.strip()).sum()
-
-            d.update({
-                "打点": rbi_count,
-                "得点": run_count,
-                "盗塁": sb_count,
-                "失策": int(error_count)
-            })
-            rows_data.append(d)
-        
-        if rows_data:
-            df_res = pd.DataFrame(rows_data).sort_values(["打順", "選手名"]).set_index("打順")
-            cols = ["選手名"] + [f"{i}" for i in range(1, 8)] + ["打点", "得点", "盗塁", "失策"]
-            df_res = df_res[cols]
-            st.dataframe(
-                df_res.style.applymap(style_result, subset=[f"{i}" for i in range(1, 8)]), 
-                use_container_width=True
-            )
-    else:
-        st.info(f"{target_side}の打撃データがありません。")
-
-    # --- 2. 投手詳細 ---
-    st.markdown(f"##### ⚾ {opp_side}の守備 (投手成績)")
-    temp_pitcher_stats = {}
-    pitcher_order = [p for p in defense_logs['pitcher_name'].unique() if p]
-
-    for p_name in pitcher_order:
-        p_logs = defense_logs[defense_logs['pitcher_name'] == p_name]
-        r_count = 0
-        for _, r in p_logs.iterrows():
-            res_val = str(r['run_result']).strip()
-            scorers = [s.strip() for s in res_val.replace("、", ",").split(",") if s.strip()]
-            r_count += len(scorers)
-        temp_pitcher_stats[p_name] = {"失点": r_count}
-
-    all_decisions = get_all_pitcher_decisions(
-        is_batting_first, final_my_score, final_opp_score, target_side, 
-        pitcher_order, temp_pitcher_stats
-    )
-
-    pitching_data = []
-    for p_name in pitcher_order:
-        p_logs = defense_logs[defense_logs['pitcher_name'] == p_name].sort_values('id')
-        p_at_bats = p_logs[p_logs['event_type'] == 'at_bat_result']
-
-        total_outs = 0
-        for i in range(len(p_logs)):
-            current_row = p_logs.iloc[i]
-            try:
-                s_out = int(current_row['start_outs'] or 0)
-            except:
-                s_out = 0
-            
-            if i + 1 < len(p_logs):
-                next_row = p_logs.iloc[i+1]
-                if current_row['inning'] == next_row['inning']:
-                    try:
-                        n_out = int(next_row['start_outs'] or 0)
-                        diff = n_out - s_out
-                        if diff > 0: total_outs += diff
-                    except: pass
-                else:
-                    total_outs += (3 - s_out)
-            else:
-                res_str = str(current_row['at_bat_result']) + str(current_row['sub_detail'])
-                if any(x in res_str for x in ["ゴロ", "飛", "直", "三振", "アウト", "犠"]):
-                    total_outs += 1
-
-        ip = f"{total_outs // 3} {total_outs % 3}/3" if total_outs % 3 != 0 else f"{total_outs // 3}"
-
-        total_pitches = 0
-        for c_json in p_at_bats['counts_history_json'].fillna("[]"):
-            try:
-                c_list = json.loads(c_json)
-                total_pitches += len(c_list)
-            except: pass
-
-        h_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False)])
-        hr_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('本塁打', na=False)])
-        k_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('三振', na=False)])
-        bb_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('四球', na=False)])
-        hbp_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('死球', na=False)])
-        wp_count = len(p_logs[p_logs['at_bat_result'].str.contains('WP|ワイルドピッチ', na=False)])
-
-        r_count = 0 
-        er_count = 0 
-        v_outs_in_inning = 0  
-        it_finished_virtually = False 
-
-        for _, r in p_logs.iterrows():
-            res_text = str(r['at_bat_result']) + str(r['sub_detail'])
-            is_err = "失" in res_text or "失策" in res_text
-            is_out = any(x in res_text for x in ["アウト", "三振", "ゴロ", "飛", "直", "犠"])
-
-            scorers = [s.strip() for s in str(r['run_result']).replace("、", ",").split(",") if s.strip()]
-            num_sc = len(scorers)
-            r_count += num_sc
-
-            if not it_finished_virtually and not is_err:
-                er_count += num_sc
-
-            if is_out: v_outs_in_inning += 1
-            if is_err: v_outs_in_inning += 1 # エラーも仮想アウトに含める
-            if v_outs_in_inning >= 3:
-                it_finished_virtually = True
-
-        decision = all_decisions.get(p_name, "-")
-
-        pitching_data.append({
-            "投手名": p_name, "回": ip, "球数": total_pitches,
-            "被安打": h_count, "被本": hr_count, "奪三振": k_count,
-            "与四球": bb_count, "与死球": hbp_count, "WP": wp_count,
-            "失点": r_count, "自責点": er_count, "勝敗": decision
-        })
-
-    if pitching_data:
-        df_pitching = pd.DataFrame(pitching_data).set_index("投手名")
-        int_cols = ["球数", "被安打", "被本", "奪三振", "与四球", "与死球", "WP", "失点", "自責点"]
-        for col in int_cols:
-            df_pitching[col] = df_pitching[col].astype(int)                        
-        st.dataframe(df_pitching, use_container_width=True)
-    else:
-        st.info("投手データがありません。")
-
 # ----------------------------------------------------
 # 　メインUI関数
 # ----------------------------------------------------
@@ -327,17 +164,19 @@ def show():
         match_date_str = master_row['match_date']
         my_team_name = master_row['my_team_name']
         opp_team_name = master_row['opp_team_name']
+
         is_batting_first = int(master_row['is_top_flag'] or 0)
 
         v_total_score = 0
         h_total_score = 0
         top_score_raw = 0
         v_hc = 0
-
+        h_hc = 0
         final_my_score = 0
         final_opp_score = 0
         top_h = 0; bot_h = 0
         e_on_top = 0; e_on_bot = 0
+
         visitor_name = my_team_name if is_batting_first == 0 else opp_team_name
         home_name = opp_team_name if is_batting_first == 0 else my_team_name
 
@@ -606,3 +445,166 @@ def show():
                                 st.error("削除処理に失敗しました。データベース管理者へ確認してください。")
 
         st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+
+def render_side_details(target_side, logs, is_batting_first, final_my_score, final_opp_score):
+    """指定された攻撃サイド（表/裏）の「打撃成績」と、その時に守備をしていた相手の「投手成績」を描画する"""
+    side_all_logs = logs[logs['inning'].str.contains(target_side)].copy()
+    opp_side = "裏" if target_side == "表" else "表"
+    defense_logs = logs[logs['inning'].str.contains(opp_side)].copy()
+    side_bat_logs = side_all_logs[side_all_logs['event_type'] == 'at_bat_result'].copy()
+    
+    # --- 1. 打撃詳細 ---
+    st.markdown(f"##### 🏏 {target_side}の攻撃 (打撃成績)")
+    if not side_bat_logs.empty:
+        rows_data = []
+        for name in side_bat_logs['batter_name'].unique():
+            if not name: continue
+            
+            p_bat = side_bat_logs[side_bat_logs['batter_name'] == name]                        
+            d = {
+                "打順": int(p_bat['batting_order'].min()) if not p_bat['batting_order'].empty else 0,
+                "選手名": name
+            }
+
+            for i in range(1, 8):
+                inn_str = f"{i}回{target_side}"
+                inn_bat = p_bat[p_bat['inning'] == inn_str]
+                if not inn_bat.empty:
+                    d[f"{i}"] = " / ".join(inn_bat['at_bat_result'].fillna("").astype(str).tolist())
+                else:
+                    d[f"{i}"] = ""
+
+            rbi_count = 0
+            for res in p_bat['run_result'].fillna(""):
+                if str(res).strip():
+                    rbi_count += len(str(res).split(','))                        
+
+            run_count = calculate_all_runs(side_all_logs, name)
+            sb_count = len(side_all_logs[
+                (side_all_logs['event_type'] == 'runner_event') & 
+                (side_all_logs['at_bat_result'].str.contains('盗塁', na=False)) &
+                (side_all_logs['batter_name'].str.strip() == name.strip())
+            ])
+            error_count = (defense_logs['error_player'].fillna("").str.strip() == name.strip()).sum()
+
+            d.update({
+                "打点": rbi_count,
+                "得点": run_count,
+                "盗塁": sb_count,
+                "失策": int(error_count)
+            })
+            rows_data.append(d)
+        
+        if rows_data:
+            df_res = pd.DataFrame(rows_data).sort_values(["打順", "選手名"]).set_index("打順")
+            cols = ["選手名"] + [f"{i}" for i in range(1, 8)] + ["打点", "得点", "盗塁", "失策"]
+            df_res = df_res[cols]
+            st.dataframe(
+                df_res.style.applymap(style_result, subset=[f"{i}" for i in range(1, 8)]), 
+                use_container_width=True
+            )
+    else:
+        st.info(f"{target_side}の打撃データがありません。")
+
+    # --- 2. 投手詳細 ---
+    st.markdown(f"##### ⚾ {opp_side}の守備 (投手成績)")
+    temp_pitcher_stats = {}
+    pitcher_order = [p for p in defense_logs['pitcher_name'].unique() if p]
+
+    for p_name in pitcher_order:
+        p_logs = defense_logs[defense_logs['pitcher_name'] == p_name]
+        r_count = 0
+        for _, r in p_logs.iterrows():
+            res_val = str(r['run_result']).strip()
+            scorers = [s.strip() for s in res_val.replace("、", ",").split(",") if s.strip()]
+            r_count += len(scorers)
+        temp_pitcher_stats[p_name] = {"失点": r_count}
+
+    all_decisions = get_all_pitcher_decisions(
+        is_batting_first, final_my_score, final_opp_score, target_side, 
+        pitcher_order, temp_pitcher_stats
+    )
+
+    pitching_data = []
+    for p_name in pitcher_order:
+        p_logs = defense_logs[defense_logs['pitcher_name'] == p_name].sort_values('id')
+        p_at_bats = p_logs[p_logs['event_type'] == 'at_bat_result']
+
+        total_outs = 0
+        for i in range(len(p_logs)):
+            current_row = p_logs.iloc[i]
+            try:
+                s_out = int(current_row['start_outs'] or 0)
+            except:
+                s_out = 0
+            
+            if i + 1 < len(p_logs):
+                next_row = p_logs.iloc[i+1]
+                if current_row['inning'] == next_row['inning']:
+                    try:
+                        n_out = int(next_row['start_outs'] or 0)
+                        diff = n_out - s_out
+                        if diff > 0: total_outs += diff
+                    except: pass
+                else:
+                    total_outs += (3 - s_out)
+            else:
+                res_str = str(current_row['at_bat_result']) + str(current_row['sub_detail'])
+                if any(x in res_str for x in ["ゴロ", "飛", "直", "三振", "アウト", "犠"]):
+                    total_outs += 1
+
+        ip = f"{total_outs // 3} {total_outs % 3}/3" if total_outs % 3 != 0 else f"{total_outs // 3}"
+
+        total_pitches = 0
+        for c_json in p_at_bats['counts_history_json'].fillna("[]"):
+            try:
+                c_list = json.loads(c_json)
+                total_pitches += len(c_list)
+            except: pass
+
+        h_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('単打|二塁打|三塁打|本塁打', na=False)])
+        hr_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('本塁打', na=False)])
+        k_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('三振', na=False)])
+        bb_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('四球', na=False)])
+        hbp_count = len(p_at_bats[p_at_bats['at_bat_result'].str.contains('死球', na=False)])
+        wp_count = len(p_logs[p_logs['at_bat_result'].str.contains('WP|ワイルドピッチ', na=False)])
+
+        r_count = 0 
+        er_count = 0 
+        v_outs_in_inning = 0  
+        it_finished_virtually = False 
+
+        for _, r in p_logs.iterrows():
+            res_text = str(r['at_bat_result']) + str(r['sub_detail'])
+            is_err = "失" in res_text or "失策" in res_text
+            is_out = any(x in res_text for x in ["アウト", "三振", "ゴロ", "飛", "直", "犠"])
+
+            scorers = [s.strip() for s in str(r['run_result']).replace("、", ",").split(",") if s.strip()]
+            num_sc = len(scorers)
+            r_count += num_sc
+
+            if not it_finished_virtually and not is_err:
+                er_count += num_sc
+
+            if is_out: v_outs_in_inning += 1
+            if is_err: v_outs_in_inning += 1 # エラーも仮想アウトに含める
+            if v_outs_in_inning >= 3:
+                it_finished_virtually = True
+
+        decision = all_decisions.get(p_name, "-")
+
+        pitching_data.append({
+            "投手名": p_name, "回": ip, "球数": total_pitches,
+            "被安打": h_count, "被本": hr_count, "奪三振": k_count,
+            "与四球": bb_count, "与死球": hbp_count, "WP": wp_count,
+            "失点": r_count, "自責点": er_count, "勝敗": decision
+        })
+
+    if pitching_data:
+        df_pitching = pd.DataFrame(pitching_data).set_index("投手名")
+        int_cols = ["球数", "被安打", "被本", "奪三振", "与四球", "与死球", "WP", "失点", "自責点"]
+        for col in int_cols:
+            df_pitching[col] = df_pitching[col].astype(int)                        
+        st.dataframe(df_pitching, use_container_width=True)
+    else:
+        st.info("投手データがありません。")
