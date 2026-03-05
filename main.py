@@ -142,16 +142,6 @@ if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
     except FileNotFoundError:
         st.sidebar.error("DBファイルが見つかりません")
 
-# --- ここに追加 ---
-    st.sidebar.markdown("---")
-    st.sidebar.warning("⚠️ メンテナンス用")
-    if st.sidebar.button("🔥 詳細版データを一括清掃する", key="cleanup_btn"):
-        # database.pyに実装した関数を呼び出し
-        result = db.delete_all_manual_games(club_id)
-        st.sidebar.success(result)
-        st.rerun()
-
-
 
 # ■デバッグ-----------------
 
@@ -215,7 +205,18 @@ elif page_key == "mobile_scorebook":
 elif page_key == "settings":
     import admin_settings; admin_settings.show()
 
+# ファイルの最後の方
+# ---------------------
 
+st.sidebar.divider()
+with st.sidebar.expander("🛠️ 緊急ツール (一時的)"):
+    st.warning("詳細版データの一括削除")
+    # session_stateから直接IDを取得
+    curr_id = st.session_state.get("club_id", "Unknown")
+    if st.button("🔥 詳細版データを一括清掃する"):
+        result = db.delete_all_manual_games(curr_id)
+        st.success(result)
+        st.rerun()
 
 # 20260226 Ver.1.0
 
