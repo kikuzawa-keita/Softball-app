@@ -131,14 +131,6 @@ if "main_nav" not in st.session_state:
 st.sidebar.title("メニュー")
 selection = st.sidebar.radio("Go to", page_list, key="main_nav")
 
-if role == "admin":
-    with st.sidebar.expander("🚨 特殊データ操作"):
-        st.warning("詳細版データの一括削除を行います")
-        if st.button("🔥 詳細版データを一括清掃する"):
-            # database.py に関数が追加されていることが前提
-            result = db.delete_all_manual_games(club_id)
-            st.success(result)
-            st.rerun()
 
 # ■DB管理-----------------
 
@@ -149,6 +141,16 @@ if role == "admin" and st.sidebar.checkbox("DB管理表示", value=False):
             st.sidebar.download_button("DB全体バックアップ", f, "softball.db")
     except FileNotFoundError:
         st.sidebar.error("DBファイルが見つかりません")
+
+# --- ここに追加 ---
+    st.sidebar.markdown("---")
+    st.sidebar.warning("⚠️ メンテナンス用")
+    if st.sidebar.button("🔥 詳細版データを一括清掃する"):
+        # database.pyに実装した関数を呼び出し
+        result = db.delete_all_manual_games(club_id)
+        st.sidebar.success(result)
+        st.rerun()
+
 
 
 # ■デバッグ-----------------
