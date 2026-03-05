@@ -7,6 +7,18 @@ import sqlite3
 
 st.set_page_config(page_title="Softball Scorebook SaaS", layout="wide")
 
+# ==========================================
+# 🔥【緊急・最優先】ここなら絶対に出ます！！
+# ==========================================
+with st.sidebar.expander("🛠️ 緊急ツール (最上部)"):
+    curr_id = st.session_state.get("club_id", "Unknown")
+    st.write(f"現在のClubID: {curr_id}")
+    if st.button("🔥 詳細版データを一括清掃する", key="emergency_top"):
+        result = db.delete_all_manual_games(curr_id)
+        st.success(result)
+        st.rerun()
+# ==========================================
+
 db.init_db()
 
 # ------------------------------
@@ -205,18 +217,6 @@ elif page_key == "mobile_scorebook":
 elif page_key == "settings":
     import admin_settings; admin_settings.show()
 
-# ファイルの最後の方
-# ---------------------
-
-st.sidebar.divider()
-with st.sidebar.expander("🛠️ 緊急ツール (一時的)"):
-    st.warning("詳細版データの一括削除")
-    # session_stateから直接IDを取得
-    curr_id = st.session_state.get("club_id", "Unknown")
-    if st.button("🔥 詳細版データを一括清掃する"):
-        result = db.delete_all_manual_games(curr_id)
-        st.success(result)
-        st.rerun()
 
 # 20260226 Ver.1.0
 
