@@ -251,6 +251,7 @@ def render_side_details(target_side, logs, is_batting_first, final_my_score, fin
 # ----------------------------------------------------
 
 def show():
+
     with st.sidebar:
         st.divider()
         if st.checkbox("🔍 Core.cct 同期データを確認"):
@@ -328,10 +329,13 @@ def show():
         opp_team_name = master_row['opp_team_name']
         is_batting_first = int(master_row['is_top_flag'] or 0)
 
-        final_my_score = 0
-        final_opp_score = 0
         v_total_score = 0
         h_total_score = 0
+        top_score_raw = 0
+        v_hc = 0
+
+        final_my_score = 0
+        final_opp_score = 0
         top_h = 0; bot_h = 0
         e_on_top = 0; e_on_bot = 0
         visitor_name = my_team_name if is_batting_first == 0 else opp_team_name
