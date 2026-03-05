@@ -390,13 +390,14 @@ def show():
             top_scores_list, top_h, e_on_bot = get_stats_by_side(logs, "表")
             bot_scores_list, bot_h, e_on_top = get_stats_by_side(logs, "裏")
 
-            v_total = sum(top_scores_list) + v_hc
-            h_total = sum(bot_scores_list) + h_hc
+            top_score_raw = sum(top_scores_list) 
+            v_total_score = top_score_raw + v_hc 
+            h_total_score = sum(bot_scores_list) + h_hc
 
             if is_my_team_top:
-                final_my_score, final_opp_score = v_total, h_total
+                final_my_score, final_opp_score = v_total_score, h_total_score
             else:
-                final_my_score, final_opp_score = h_total, v_total
+                final_my_score, final_opp_score = h_total_score, v_total_score
 
 
         # ■ 見出し描画 -----------------
